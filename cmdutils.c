@@ -36,7 +36,6 @@
 #include "libpostproc/postprocess.h"
 #include "libavutil/avstring.h"
 #include "libavutil/pixdesc.h"
-#include "libavutil/eval.h"
 #include "libavcodec/opt.h"
 #include "cmdutils.h"
 #include "version.h"
@@ -59,7 +58,7 @@ double parse_number_or_die(const char *context, const char *numstr, int type, do
 {
     char *tail;
     const char *error;
-    double d = av_strtod(numstr, &tail);
+    double d = strtod(numstr, &tail);
     if (*tail)
         error= "Expected number for %s but found: %s\n";
     else if (d < min || d > max)

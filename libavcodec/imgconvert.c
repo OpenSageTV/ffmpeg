@@ -32,9 +32,9 @@
 
 #include "avcodec.h"
 #include "dsputil.h"
+#include "colorspace.h"
 #include "internal.h"
 #include "imgconvert.h"
-#include "libavutil/colorspace.h"
 #include "libavutil/pixdesc.h"
 
 #if HAVE_MMX
@@ -851,7 +851,8 @@ static enum PixelFormat avcodec_find_best_pix_fmt1(int64_t pix_fmt_mask,
     /* find exact color match with smallest size */
     dst_pix_fmt = PIX_FMT_NONE;
     min_dist = 0x7fffffff;
-    for(i = 0;i < PIX_FMT_NB; i++) {
+    /* test only the first 64 pixel formats to avoid undefined behaviour */
+    for (i = 0; i < 64; i++) {
         if (pix_fmt_mask & (1ULL << i)) {
             loss = avcodec_get_pix_fmt_loss(i, src_pix_fmt, has_alpha) & loss_mask;
             if (loss == 0) {
@@ -948,8 +949,7 @@ int ff_get_plane_bytewidth(enum PixelFormat pix_fmt, int width, int plane)
         return (width * bits + 7) >> 3;
         break;
     case FF_PIXEL_PLANAR:
-            if ((pix_fmt != PIX_FMT_NV12 && pix_fmt != PIX_FMT_NV21) &&
-                (plane == 1 || plane == 2))
+            if (plane == 1 || plane == 2)
                 width= -((-width)>>desc->log2_chroma_w);
 
             return (width * pf->depth + 7) >> 3;

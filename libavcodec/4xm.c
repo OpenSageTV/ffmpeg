@@ -333,16 +333,16 @@ static void decode_p_block(FourXContext *f, uint16_t *dst, uint16_t *src, int lo
             av_log(f->avctx, AV_LOG_ERROR, "mv out of pic\n");
             return;
         }
-        mcdc(dst, src, log2w, h, stride, 1, av_le2ne16(*f->wordstream++));
+        mcdc(dst, src, log2w, h, stride, 1, le2me_16(*f->wordstream++));
     }else if(code == 5){
-        mcdc(dst, src, log2w, h, stride, 0, av_le2ne16(*f->wordstream++));
+        mcdc(dst, src, log2w, h, stride, 0, le2me_16(*f->wordstream++));
     }else if(code == 6){
         if(log2w){
-            dst[0] = av_le2ne16(*f->wordstream++);
-            dst[1] = av_le2ne16(*f->wordstream++);
+            dst[0] = le2me_16(*f->wordstream++);
+            dst[1] = le2me_16(*f->wordstream++);
         }else{
-            dst[0     ] = av_le2ne16(*f->wordstream++);
-            dst[stride] = av_le2ne16(*f->wordstream++);
+            dst[0     ] = le2me_16(*f->wordstream++);
+            dst[stride] = le2me_16(*f->wordstream++);
         }
     }
 }
@@ -641,9 +641,18 @@ static int decode_i_frame(FourXContext *f, const uint8_t *buf, int length){
     uint16_t *dst= (uint16_t*)f->current_picture.data[0];
     const int stride= f->current_picture.linesize[0]>>1;
     const unsigned int bitstream_size= AV_RL32(buf);
-    const int token_count av_unused = AV_RL32(buf + bitstream_size + 8);
-    unsigned int prestream_size= 4*AV_RL32(buf + bitstream_size + 4);
-    const uint8_t *prestream= buf + bitstream_size + 12;
+    int token_count av_unused;
+    unsigned int prestream_size;
+    const uint8_t *prestream;
+
+    if (length < bitstream_size + 12) {
+        av_log(f->avctx, AV_LOG_ERROR, "packet size too small\n");
+        return AVERROR_INVALIDDATA;
+    }
+
+    token_count    = AV_RL32(buf + bitstream_size + 8);
+    prestream_size = 4 * AV_RL32(buf + bitstream_size + 4);
+    prestream      = buf + bitstream_size + 12;
 
     if(prestream_size + bitstream_size + 12 != length
        || bitstream_size > (1<<26)

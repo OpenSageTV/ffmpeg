@@ -63,7 +63,6 @@ untested special converters
 #include "libavutil/intreadwrite.h"
 #include "libavutil/x86_cpu.h"
 #include "libavutil/avutil.h"
-#include "libavutil/mathematics.h"
 #include "libavutil/bswap.h"
 #include "libavutil/pixdesc.h"
 
@@ -77,6 +76,12 @@ untested special converters
 #define DITHER1XBPP
 
 #define FAST_BGR2YV12 // use 7 bit coefficients instead of 15 bit
+
+#ifdef M_PI
+#define PI M_PI
+#else
+#define PI 3.14159265358979323846
+#endif
 
 #define isPacked(x)         (       \
            (x)==PIX_FMT_PAL8        \
@@ -989,7 +994,7 @@ static void fillPlane(uint8_t* plane, int stride, int width, int height, int y, 
     }
 }
 
-static inline void rgb48ToY(uint8_t *dst, const uint8_t *src, long width,
+static inline void rgb48ToY(uint8_t *dst, const uint8_t *src, int width,
                             uint32_t *unused)
 {
     int i;
@@ -1004,7 +1009,7 @@ static inline void rgb48ToY(uint8_t *dst, const uint8_t *src, long width,
 
 static inline void rgb48ToUV(uint8_t *dstU, uint8_t *dstV,
                              const uint8_t *src1, const uint8_t *src2,
-                             long width, uint32_t *unused)
+                             int width, uint32_t *unused)
 {
     int i;
     assert(src1==src2);
@@ -1020,7 +1025,7 @@ static inline void rgb48ToUV(uint8_t *dstU, uint8_t *dstV,
 
 static inline void rgb48ToUV_half(uint8_t *dstU, uint8_t *dstV,
                                   const uint8_t *src1, const uint8_t *src2,
-                                  long width, uint32_t *unused)
+                                  int width, uint32_t *unused)
 {
     int i;
     assert(src1==src2);
@@ -1659,7 +1664,7 @@ static int planarCopyWrapper(SwsContext *c, const uint8_t* src[], int srcStride[
 
                 for (i=0; i<height; i++) {
                     for (j=0; j<length; j++)
-                        ((uint16_t*)dstPtr)[j] = av_bswap16(((const uint16_t*)srcPtr)[j]);
+                        ((uint16_t*)dstPtr)[j] = bswap_16(((const uint16_t*)srcPtr)[j]);
                     srcPtr+= srcStride[plane];
                     dstPtr+= dstStride[plane];
                 }

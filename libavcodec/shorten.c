@@ -82,6 +82,7 @@ typedef struct ShortenContext {
     int channels;
 
     int32_t *decoded[MAX_CHANNELS];
+    int32_t *decoded_base[MAX_CHANNELS];
     int32_t *offset[MAX_CHANNELS];
     int *coeffs;
     uint8_t *bitstream;
@@ -114,6 +115,7 @@ static int allocate_buffers(ShortenContext *s)
 {
     int i, chan;
     int *coeffs;
+    void *tmp_ptr;
 
     for (chan=0; chan<s->channels; chan++) {
         if(FFMAX(1, s->nmean) >= UINT_MAX/sizeof(int32_t)){
@@ -125,12 +127,19 @@ static int allocate_buffers(ShortenContext *s)
             return -1;
         }
 
-        s->offset[chan] = av_realloc(s->offset[chan], sizeof(int32_t)*FFMAX(1, s->nmean));
+        tmp_ptr = av_realloc(s->offset[chan], sizeof(int32_t)*FFMAX(1, s->nmean));
+        if (!tmp_ptr)
+            return AVERROR(ENOMEM);
+        s->offset[chan] = tmp_ptr;
 
-        s->decoded[chan] = av_realloc(s->decoded[chan], sizeof(int32_t)*(s->blocksize + s->nwrap));
+        tmp_ptr = av_realloc(s->decoded_base[chan], (s->blocksize + s->nwrap) *
+                             sizeof(s->decoded_base[0][0]));
+        if (!tmp_ptr)
+            return AVERROR(ENOMEM);
+        s->decoded_base[chan] = tmp_ptr;
         for (i=0; i<s->nwrap; i++)
-            s->decoded[chan][i] = 0;
-        s->decoded[chan] += s->nwrap;
+            s->decoded_base[chan][i] = 0;
+        s->decoded[chan] = s->decoded_base[chan] + s->nwrap;
     }
 
     coeffs = av_realloc(s->coeffs, s->nwrap * sizeof(*s->coeffs));
@@ -156,7 +165,7 @@ static void fix_bitshift(ShortenContext *s, int32_t *buffer)
 
     if (s->bitshift != 0)
         for (i = 0; i < s->blocksize; i++)
-            buffer[s->nwrap + i] <<= s->bitshift;
+            buffer[i] <<= s->bitshift;
 }
 
 
@@ -184,12 +193,12 @@ static void init_offset(ShortenContext *s)
 
 static inline int get_le32(GetBitContext *gb)
 {
-    return av_bswap32(get_bits_long(gb, 32));
+    return bswap_32(get_bits_long(gb, 32));
 }
 
 static inline short get_le16(GetBitContext *gb)
 {
-    return av_bswap16(get_bits_long(gb, 16));
+    return bswap_16(get_bits_long(gb, 16));
 }
 
 static int decode_wave_header(AVCodecContext *avctx, uint8_t *header, int header_size)
@@ -286,8 +295,15 @@ static int shorten_decode_frame(AVCodecContext *avctx,
     int i, input_buf_size = 0;
     int16_t *samples = data;
     if(s->max_framesize == 0){
+        void *tmp_ptr;
         s->max_framesize= 1024; // should hopefully be enough for the first header
-        s->bitstream= av_fast_realloc(s->bitstream, &s->allocated_bitstream_size, s->max_framesize);
+        tmp_ptr = av_fast_realloc(s->bitstream, &s->allocated_bitstream_size,
+                                  s->max_framesize);
+        if (!tmp_ptr) {
+            av_log(avctx, AV_LOG_ERROR, "error allocating bitstream buffer\n");
+            return AVERROR(ENOMEM);
+        }
+        s->bitstream = tmp_ptr;
     }
 
     if(1 && s->max_framesize){//FIXME truncated
@@ -486,9 +502,15 @@ static int shorten_decode_frame(AVCodecContext *avctx,
             case FN_BITSHIFT:
                 s->bitshift = get_ur_golomb_shorten(&s->gb, BITSHIFTSIZE);
                 break;
-            case FN_BLOCKSIZE:
-                s->blocksize = get_uint(s, av_log2(s->blocksize));
+            case FN_BLOCKSIZE: {
+                int blocksize = get_uint(s, av_log2(s->blocksize));
+                if (blocksize > s->blocksize) {
+                    av_log(avctx, AV_LOG_ERROR, "Increasing block size is not supported\n");
+                    return AVERROR_PATCHWELCOME;
+                }
+                s->blocksize = blocksize;
                 break;
+            }
             case FN_QUIT:
                 *data_size = 0;
                 return buf_size;
@@ -525,8 +547,8 @@ static av_cold int shorten_decode_close(AVCodecContext *avctx)
     int i;
 
     for (i = 0; i < s->channels; i++) {
-        s->decoded[i] -= s->nwrap;
-        av_freep(&s->decoded[i]);
+        s->decoded[i] = NULL;
+        av_freep(&s->decoded_base[i]);
         av_freep(&s->offset[i]);
     }
     av_freep(&s->bitstream);

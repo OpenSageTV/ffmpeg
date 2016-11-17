@@ -301,7 +301,7 @@ static int process_ea_header(AVFormatContext *s) {
         if (i == 0)
             ea->big_endian = size > 0x000FFFFF;
         if (ea->big_endian)
-            size = av_bswap32(size);
+            size = bswap_32(size);
 
         switch (blockid) {
             case ISNh_TAG:
@@ -457,12 +457,17 @@ static int ea_read_packet(AVFormatContext *s,
 
     while (!packet_read) {
         chunk_type = get_le32(pb);
-        chunk_size = (ea->big_endian ? get_be32(pb) : get_le32(pb)) - 8;
+        chunk_size = ea->big_endian ? get_be32(pb) : get_le32(pb);
+        if (chunk_size <= 8)
+            return AVERROR_INVALIDDATA;
+        chunk_size -= 8;
 
         switch (chunk_type) {
         /* audio data */
         case ISNh_TAG:
             /* header chunk also contains data; skip over the header portion*/
+            if (chunk_size < 32)
+                return AVERROR_INVALIDDATA;
             url_fskip(pb, 32);
             chunk_size -= 32;
         case ISNd_TAG:

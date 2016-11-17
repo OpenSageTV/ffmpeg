@@ -166,9 +166,9 @@ static void IMLT(float *pInput, float *pOutput, int odd_band)
 /**
  * Atrac 3 indata descrambling, only used for data coming from the rm container
  *
- * @param inbuffer  pointer to 8 bit array of indata
+ * @param in        pointer to 8 bit array of indata
+ * @param bits      amount of bits
  * @param out       pointer to 8 bit array of outdata
- * @param bytes     amount of bytes
  */
 
 static int decode_bytes(const uint8_t* inbuffer, uint8_t* out, int bytes){
@@ -179,7 +179,7 @@ static int decode_bytes(const uint8_t* inbuffer, uint8_t* out, int bytes){
 
     off = (intptr_t)inbuffer & 3;
     buf = (const uint32_t*) (inbuffer - off);
-    c = av_be2ne32((0x537F6103 >> (off*8)) | (0x537F6103 << (32-(off*8))));
+    c = be2me_32((0x537F6103 >> (off*8)) | (0x537F6103 << (32-(off*8))));
     bytes += 3 + off;
     for (i = 0; i < bytes/4; i++)
         obuf[i] = c ^ buf[i];
@@ -393,6 +393,8 @@ static int decodeTonalComponents (GetBitContext *gb, tonal_component *pComponent
 
             for (k=0; k<coded_components; k++) {
                 sfIndx = get_bits(gb,6);
+                if (component_count >= 64)
+                    return AVERROR_INVALIDDATA;
                 pComponent[component_count].pos = j * 64 + (get_bits(gb,6));
                 max_coded_values = 1024 - pComponent[component_count].pos;
                 coded_values = coded_values_per_component + 1;

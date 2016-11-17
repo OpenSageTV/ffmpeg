@@ -36,7 +36,6 @@ typedef struct {
      *  -1 = keep original aspect
      */
     int w, h;
-    unsigned int flags;         ///sws flags
 
     int hsub, vsub;             ///< chroma subsampling
     int slice_y;                ///< top of current output slice
@@ -46,14 +45,9 @@ typedef struct {
 static av_cold int init(AVFilterContext *ctx, const char *args, void *opaque)
 {
     ScaleContext *scale = ctx->priv;
-    const char *p;
 
-    scale->flags = SWS_BILINEAR;
-    if (args){
+    if (args)
         sscanf(args, "%d:%d", &scale->w, &scale->h);
-        p= strstr(args,"flags=");
-        if(p) scale->flags= strtoul(p+6, NULL, 0);
-    }
 
     /* sanity check params */
     if (scale->w <  -1 || scale->h <  -1) {
@@ -128,16 +122,14 @@ static int config_props(AVFilterLink *outlink)
     outlink->h = h;
 
     /* TODO: make algorithm configurable */
-    av_log(ctx, AV_LOG_INFO, "w:%d h:%d fmt:%s -> w:%d h:%d fmt:%s flags:0x%0x\n",
-           inlink ->w, inlink ->h, av_pix_fmt_descriptors[ inlink->format].name,
-           outlink->w, outlink->h, av_pix_fmt_descriptors[outlink->format].name,
-           scale->flags);
-
-    scale->input_is_pal = av_pix_fmt_descriptors[inlink->format].flags & PIX_FMT_PAL;
-
     scale->sws = sws_getContext(inlink ->w, inlink ->h, inlink ->format,
                                 outlink->w, outlink->h, outlink->format,
-                                scale->flags, NULL, NULL, NULL);
+                                SWS_BILINEAR, NULL, NULL, NULL);
+
+    av_log(ctx, AV_LOG_INFO, "w:%d h:%d fmt:%s\n",
+           outlink->w, outlink->h, av_pix_fmt_descriptors[outlink->format].name);
+
+    scale->input_is_pal = av_pix_fmt_descriptors[inlink->format].flags & PIX_FMT_PAL;
 
     return !scale->sws;
 }
@@ -152,8 +144,8 @@ static void start_frame(AVFilterLink *link, AVFilterPicRef *picref)
     scale->vsub = av_pix_fmt_descriptors[link->format].log2_chroma_h;
 
     outpicref = avfilter_get_video_buffer(outlink, AV_PERM_WRITE, outlink->w, outlink->h);
-    avfilter_copy_picref_props(outpicref, picref);
-
+    outpicref->pts = picref->pts;
+    outpicref->pos = picref->pos;
     outlink->outpic = outpicref;
 
     av_reduce(&outpicref->pixel_aspect.num, &outpicref->pixel_aspect.den,
@@ -170,7 +162,7 @@ static void draw_slice(AVFilterLink *link, int y, int h, int slice_dir)
     ScaleContext *scale = link->dst->priv;
     int out_h;
     AVFilterPicRef *cur_pic = link->cur_pic;
-    const uint8_t *data[4];
+    uint8_t *data[4];
 
     if (scale->slice_y == 0 && slice_dir == -1)
         scale->slice_y = link->dst->outputs[0]->h;

@@ -89,6 +89,11 @@ static av_cold int yop_decode_init(AVCodecContext *avctx)
         return -1;
     }
 
+    if (!avctx->extradata) {
+        av_log(avctx, AV_LOG_ERROR, "extradata missing\n");
+        return AVERROR_INVALIDDATA;
+    }
+
     avctx->pix_fmt = PIX_FMT_PAL8;
 
     s->num_pal_colors = avctx->extradata[0];
@@ -114,7 +119,7 @@ static av_cold int yop_decode_close(AVCodecContext *avctx)
 }
 
 /**
- * Paint a macroblock using the pattern in paint_lut.
+ * Paints a macroblock using the pattern in paint_lut.
  * @param s codec context
  * @param tag the tag that was in the nibble
  */
@@ -130,7 +135,7 @@ static void yop_paint_block(YopDecContext *s, int tag)
 }
 
 /**
- * Copy a previously painted macroblock to the current_block.
+ * Copies a previously painted macroblock to the current_block.
  * @param copy_tag the tag that was in the nibble
  */
 static int yop_copy_previous_block(YopDecContext *s, int copy_tag)
@@ -155,7 +160,7 @@ static int yop_copy_previous_block(YopDecContext *s, int copy_tag)
 }
 
 /**
- * Return the next nibble in sequence, consuming a new byte on the input
+ * Returns the next nibble in sequence, consuming a new byte on the input
  * only if necessary.
  */
 static uint8_t yop_get_next_nibble(YopDecContext *s)
@@ -173,7 +178,7 @@ static uint8_t yop_get_next_nibble(YopDecContext *s)
 }
 
 /**
- * Take s->dstptr to the next macroblock in sequence.
+ * Takes s->dstptr to the next macroblock in sequence.
  */
 static void yop_next_macroblock(YopDecContext *s)
 {
@@ -198,6 +203,11 @@ static int yop_decode_frame(AVCodecContext *avctx, void *data, int *data_size,
     if (s->frame.data[0])
         avctx->release_buffer(avctx, &s->frame);
 
+    if (avpkt->size < 4 + 3*s->num_pal_colors) {
+        av_log(avctx, AV_LOG_ERROR, "packet of size %d too small\n", avpkt->size);
+        return AVERROR_INVALIDDATA;
+    }
+
     ret = avctx->get_buffer(avctx, &s->frame);
     if (ret < 0) {
         av_log(avctx, AV_LOG_ERROR, "get_buffer() failed\n");
@@ -213,6 +223,10 @@ static int yop_decode_frame(AVCodecContext *avctx, void *data, int *data_size,
     s->low_nibble = NULL;
 
     is_odd_frame = avpkt->data[0];
+    if(is_odd_frame>1){
+        av_log(avctx, AV_LOG_ERROR, "frame is too odd %d\n", is_odd_frame);
+        return AVERROR_INVALIDDATA;
+    }
     firstcolor   = s->first_color[is_odd_frame];
     palette      = (uint32_t *)s->frame.data[1];
 

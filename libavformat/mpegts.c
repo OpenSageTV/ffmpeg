@@ -239,7 +239,7 @@ static int discard_pid(MpegTSContext *ts, unsigned int pid)
 }
 
 /**
- *  Assemble PES packets out of TS packets, and then call the "section_cb"
+ *  Assembles PES packets out of TS packets, and then calls the "section_cb"
  *  function when they are complete.
  */
 static void write_section_data(AVFormatContext *s, MpegTSFilter *tss1,
@@ -860,6 +860,7 @@ static void pmt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
     const uint8_t *p, *p_end, *desc_list_end, *desc_end;
     int program_info_length, pcr_pid, pid, stream_type;
     int desc_list_len, desc_len, desc_tag;
+    int comp_page, anc_page;
     char language[4];
     uint32_t prog_reg_desc = 0; /* registration descriptor */
 
@@ -980,17 +981,9 @@ static void pmt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
                 language[2] = get8(&p, desc_end);
                 language[3] = 0;
                 get8(&p, desc_end);
-                if (st->codec->extradata) {
-                    if (st->codec->extradata_size == 4 && memcmp(st->codec->extradata, p, 4))
-                        av_log_ask_for_sample(ts->stream, "DVB sub with multiple IDs\n");
-                } else {
-                    st->codec->extradata = av_malloc(4 + FF_INPUT_BUFFER_PADDING_SIZE);
-                    if (st->codec->extradata) {
-                        st->codec->extradata_size = 4;
-                        memcpy(st->codec->extradata, p, 4);
-                    }
-                }
-                p += 4;
+                comp_page = get16(&p, desc_end);
+                anc_page = get16(&p, desc_end);
+                st->codec->sub_id = (anc_page << 16) | comp_page;
                 av_metadata_set2(&st->metadata, "language", language, 0);
                 break;
             case 0x0a: /* ISO 639 language descriptor */
@@ -1147,7 +1140,7 @@ static int handle_packet(MpegTSContext *ts, const uint8_t *packet)
 {
     AVFormatContext *s = ts->stream;
     MpegTSFilter *tss;
-    int len, pid, cc, cc_ok, afc, is_start;
+    int len, pid, cc, expected_cc, cc_ok, afc, is_start;
     const uint8_t *p, *p_end;
     int64_t pos;
 
@@ -1165,7 +1158,8 @@ static int handle_packet(MpegTSContext *ts, const uint8_t *packet)
 
     /* continuity check (currently not used) */
     cc = (packet[3] & 0xf);
-    cc_ok = (tss->last_cc < 0) || ((((tss->last_cc + 1) & 0x0f) == cc));
+    expected_cc = (packet[3] & 0x10) ? (tss->last_cc + 1) & 0x0f : tss->last_cc;
+    cc_ok = (tss->last_cc < 0) || (expected_cc == cc);
     tss->last_cc = cc;
 
     /* skip adaptation field */

@@ -89,7 +89,6 @@ static int X264_frame(AVCodecContext *ctx, uint8_t *buf,
     int nnal, i;
     x264_picture_t pic_out;
 
-    x264_picture_init( &x4->pic );
     x4->pic.img.i_csp   = X264_CSP_I420;
     x4->pic.img.i_plane = 3;
 
@@ -103,14 +102,12 @@ static int X264_frame(AVCodecContext *ctx, uint8_t *buf,
         x4->pic.i_type = X264_TYPE_AUTO;
     }
 
-    do {
     if (x264_encoder_encode(x4->enc, &nal, &nnal, frame? &x4->pic: NULL, &pic_out) < 0)
         return -1;
 
     bufsize = encode_nals(ctx, buf, bufsize, nal, nnal, 0);
     if (bufsize < 0)
         return -1;
-    } while (!bufsize && !frame && x264_encoder_delayed_frames(x4->enc));
 
     /* FIXME: libx264 now provides DTS, but AVFrame doesn't have a field for it. */
     x4->out_pic.pts = pic_out.i_pts;
@@ -130,7 +127,8 @@ static int X264_frame(AVCodecContext *ctx, uint8_t *buf,
     }
 
     x4->out_pic.key_frame = pic_out.b_keyframe;
-    x4->out_pic.quality   = (pic_out.i_qpplus1 - 1) * FF_QP2LAMBDA;
+    if (bufsize)
+        x4->out_pic.quality = (pic_out.i_qpplus1 - 1) * FF_QP2LAMBDA;
 
     return bufsize;
 }
@@ -159,7 +157,6 @@ static av_cold int X264_init(AVCodecContext *avctx)
     x4->params.p_log_private        = avctx;
 
     x4->params.i_keyint_max         = avctx->gop_size;
-    x4->params.b_intra_refresh      = avctx->flags2 & CODEC_FLAG2_INTRA_REFRESH;
     x4->params.rc.i_bitrate         = avctx->bit_rate       / 1000;
     x4->params.rc.i_vbv_buffer_size = avctx->rc_buffer_size / 1000;
     x4->params.rc.i_vbv_max_bitrate = avctx->rc_max_rate    / 1000;
@@ -170,7 +167,6 @@ static av_cold int X264_init(AVCodecContext *avctx)
         if (avctx->crf) {
             x4->params.rc.i_rc_method   = X264_RC_CRF;
             x4->params.rc.f_rf_constant = avctx->crf;
-            x4->params.rc.f_rf_constant_max = avctx->crf_max;
         } else if (avctx->cqp > -1) {
             x4->params.rc.i_rc_method   = X264_RC_CQP;
             x4->params.rc.i_qp_constant = avctx->cqp;

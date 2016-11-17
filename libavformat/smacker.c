@@ -213,10 +213,10 @@ static int smacker_read_header(AVFormatContext *s, AVFormatParameters *ap)
         av_free(smk->frm_flags);
         return AVERROR(EIO);
     }
-    ((int32_t*)st->codec->extradata)[0] = av_le2ne32(smk->mmap_size);
-    ((int32_t*)st->codec->extradata)[1] = av_le2ne32(smk->mclr_size);
-    ((int32_t*)st->codec->extradata)[2] = av_le2ne32(smk->full_size);
-    ((int32_t*)st->codec->extradata)[3] = av_le2ne32(smk->type_size);
+    ((int32_t*)st->codec->extradata)[0] = le2me_32(smk->mmap_size);
+    ((int32_t*)st->codec->extradata)[1] = le2me_32(smk->mclr_size);
+    ((int32_t*)st->codec->extradata)[2] = le2me_32(smk->full_size);
+    ((int32_t*)st->codec->extradata)[3] = le2me_32(smk->type_size);
 
     smk->curstream = -1;
     smk->nextpos = url_ftell(pb);
@@ -236,7 +236,7 @@ static int smacker_read_packet(AVFormatContext *s, AVPacket *pkt)
     int pos;
 
     if (url_feof(s->pb) || smk->cur_frame >= smk->frames)
-        return AVERROR_EOF;
+        return AVERROR(EIO);
 
     /* if we demuxed all streams, pass another frame */
     if(smk->curstream < 0) {
@@ -289,10 +289,15 @@ static int smacker_read_packet(AVFormatContext *s, AVPacket *pkt)
             if(flags & 1) {
                 int size;
                 size = get_le32(s->pb) - 4;
+                uint8_t *tmpbuf;
+
                 frame_size -= size;
                 frame_size -= 4;
                 smk->curstream++;
-                smk->bufs[smk->curstream] = av_realloc(smk->bufs[smk->curstream], size);
+                tmpbuf = av_realloc(smk->bufs[smk->curstream], size);
+                if (!tmpbuf)
+                    return AVERROR(ENOMEM);
+                smk->bufs[smk->curstream] = tmpbuf;
                 smk->buf_sizes[smk->curstream] = size;
                 ret = get_buffer(s->pb, smk->bufs[smk->curstream], size);
                 if(ret != size)
@@ -301,7 +306,9 @@ static int smacker_read_packet(AVFormatContext *s, AVPacket *pkt)
             }
             flags >>= 1;
         }
-        if (av_new_packet(pkt, frame_size + 768))
+        if (frame_size < 0)
+            return AVERROR_INVALIDDATA;
+        if (av_new_packet(pkt, frame_size + 769))
             return AVERROR(ENOMEM);
         if(smk->frm_size[smk->cur_frame] & 1)
             palchange |= 2;

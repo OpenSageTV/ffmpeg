@@ -24,12 +24,12 @@
 #include <math.h>
 #include <limits.h>
 #include "libavutil/avstring.h"
-#include "libavutil/colorspace.h"
 #include "libavutil/pixdesc.h"
 #include "libavformat/avformat.h"
 #include "libavdevice/avdevice.h"
 #include "libswscale/swscale.h"
 #include "libavcodec/audioconvert.h"
+#include "libavcodec/colorspace.h"
 #include "libavcodec/opt.h"
 #include "libavcodec/avfft.h"
 
@@ -80,7 +80,9 @@ const int program_birth_year = 2003;
 /* NOTE: the size must be big enough to compensate the hardware audio buffersize size */
 #define SAMPLE_ARRAY_SIZE (2*65536)
 
+#if !CONFIG_AVFILTER
 static int sws_flags = SWS_BICUBIC;
+#endif
 
 typedef struct PacketQueue {
     AVPacketList *first_pkt, *last_pkt;
@@ -168,7 +170,6 @@ typedef struct VideoState {
     int last_i_start;
     RDFTContext *rdft;
     int rdft_bits;
-    FFTSample *rdft_data;
     int xpos;
 
     SDL_Thread *subtitle_tid;
@@ -260,8 +261,6 @@ static int error_recognition = FF_ER_CAREFUL;
 static int error_concealment = 3;
 static int decoder_reorder_pts= -1;
 static int autoexit;
-static int exit_on_keydown;
-static int exit_on_mousedown;
 static int loop=1;
 static int framedrop=1;
 
@@ -677,7 +676,18 @@ static void blend_subrect(AVPicture *dst, const AVSubtitleRect *rect, int imgw, 
 
 static void free_subpicture(SubPicture *sp)
 {
-    avsubtitle_free(&sp->sub);
+    int i;
+
+    for (i = 0; i < sp->sub.num_rects; i++)
+    {
+        av_freep(&sp->sub.rects[i]->pict.data[0]);
+        av_freep(&sp->sub.rects[i]->pict.data[1]);
+        av_freep(&sp->sub.rects[i]);
+    }
+
+    av_free(sp->sub.rects);
+
+    memset(&sp->sub, 0, sizeof(AVSubtitle));
 }
 
 static void video_image_display(VideoState *is)
@@ -909,15 +919,12 @@ static void video_audio_display(VideoState *s)
         nb_display_channels= FFMIN(nb_display_channels, 2);
         if(rdft_bits != s->rdft_bits){
             av_rdft_end(s->rdft);
-            av_free(s->rdft_data);
             s->rdft = av_rdft_init(rdft_bits, DFT_R2C);
             s->rdft_bits= rdft_bits;
-            s->rdft_data= av_malloc(4*nb_freq*sizeof(*s->rdft_data));
         }
         {
-            FFTSample *data[2];
+            FFTSample data[2][2*nb_freq];
             for(ch = 0;ch < nb_display_channels; ch++) {
-                data[ch] = s->rdft_data + 2*nb_freq*ch;
                 i = i_start + ch;
                 for(x = 0; x < 2*nb_freq; x++) {
                     double w= (x-nb_freq)*(1.0/nb_freq);
@@ -932,8 +939,7 @@ static void video_audio_display(VideoState *s)
             for(y=0; y<s->height; y++){
                 double w= 1/sqrt(nb_freq);
                 int a= sqrt(w*sqrt(data[0][2*y+0]*data[0][2*y+0] + data[0][2*y+1]*data[0][2*y+1]));
-                int b= (nb_display_channels == 2 ) ? sqrt(w*sqrt(data[1][2*y+0]*data[1][2*y+0]
-                       + data[1][2*y+1]*data[1][2*y+1])) : a;
+                int b= sqrt(w*sqrt(data[1][2*y+0]*data[1][2*y+0] + data[1][2*y+1]*data[1][2*y+1]));
                 a= FFMIN(a,255);
                 b= FFMIN(b,255);
                 fgcolor = SDL_MapRGB(screen->format, a, b, (a+b)/2);
@@ -1561,7 +1567,7 @@ static int input_get_buffer(AVCodecContext *codec, AVFrame *pic)
     AVFilterContext *ctx = codec->opaque;
     AVFilterPicRef  *ref;
     int perms = AV_PERM_WRITE;
-    int i, w, h, stride[4];
+    int w, h, stride[4];
     unsigned edge;
 
     if(pic->buffer_hints & FF_BUFFER_HINTS_VALID) {
@@ -1583,9 +1589,9 @@ static int input_get_buffer(AVCodecContext *codec, AVFrame *pic)
 
     ref->w = codec->width;
     ref->h = codec->height;
-    for(i = 0; i < 4; i ++) {
-        unsigned hshift = (i == 1 || i == 2) ? av_pix_fmt_descriptors[ref->pic->format].log2_chroma_w : 0;
-        unsigned vshift = (i == 1 || i == 2) ? av_pix_fmt_descriptors[ref->pic->format].log2_chroma_h : 0;
+    for(int i = 0; i < 3; i ++) {
+        unsigned hshift = i == 0 ? 0 : av_pix_fmt_descriptors[ref->pic->format].log2_chroma_w;
+        unsigned vshift = i == 0 ? 0 : av_pix_fmt_descriptors[ref->pic->format].log2_chroma_h;
 
         if (ref->data[i]) {
             ref->data[i]    += (edge >> hshift) + ((edge * ref->linesize[i]) >> vshift);
@@ -1596,7 +1602,6 @@ static int input_get_buffer(AVCodecContext *codec, AVFrame *pic)
     pic->opaque = ref;
     pic->age    = INT_MAX;
     pic->type   = FF_BUFFER_TYPE_USER;
-    pic->reordered_opaque = codec->reordered_opaque;
     return 0;
 }
 
@@ -1604,25 +1609,6 @@ static void input_release_buffer(AVCodecContext *codec, AVFrame *pic)
 {
     memset(pic->data, 0, sizeof(pic->data));
     avfilter_unref_pic(pic->opaque);
-}
-
-static int input_reget_buffer(AVCodecContext *codec, AVFrame *pic)
-{
-    AVFilterPicRef *ref = pic->opaque;
-
-    if (pic->data[0] == NULL) {
-        pic->buffer_hints |= FF_BUFFER_HINTS_READABLE;
-        return codec->get_buffer(codec, pic);
-    }
-
-    if ((codec->width != ref->w) || (codec->height != ref->h) ||
-        (codec->pix_fmt != ref->pic->format)) {
-        av_log(codec, AV_LOG_ERROR, "Picture properties changed.\n");
-        return -1;
-    }
-
-    pic->reordered_opaque = codec->reordered_opaque;
-    return 0;
 }
 
 static int input_init(AVFilterContext *ctx, const char *args, void *opaque)
@@ -1638,7 +1624,6 @@ static int input_init(AVFilterContext *ctx, const char *args, void *opaque)
         priv->use_dr1 = 1;
         codec->get_buffer     = input_get_buffer;
         codec->release_buffer = input_release_buffer;
-        codec->reget_buffer   = input_reget_buffer;
     }
 
     priv->frame = avcodec_alloc_frame();
@@ -1783,11 +1768,9 @@ static int video_thread(void *arg)
 
 #if CONFIG_AVFILTER
     int64_t pos;
-    char sws_flags_str[128];
     AVFilterContext *filt_src = NULL, *filt_out = NULL;
     AVFilterGraph *graph = av_mallocz(sizeof(AVFilterGraph));
-    snprintf(sws_flags_str, sizeof(sws_flags_str), "flags=%d", sws_flags);
-    graph->scale_sws_opts = av_strdup(sws_flags_str);
+    graph->scale_sws_opts = av_strdup("sws_flags=bilinear");
 
     if(!(filt_src = avfilter_open(&input_filter,  "src")))   goto the_end;
     if(!(filt_out = avfilter_open(&output_filter, "out")))   goto the_end;
@@ -2811,10 +2794,6 @@ static void event_loop(void)
         SDL_WaitEvent(&event);
         switch(event.type) {
         case SDL_KEYDOWN:
-            if (exit_on_keydown) {
-                do_exit();
-                break;
-            }
             switch(event.key.keysym.sym) {
             case SDLK_ESCAPE:
             case SDLK_q:
@@ -2883,10 +2862,6 @@ static void event_loop(void)
             }
             break;
         case SDL_MOUSEBUTTONDOWN:
-            if (exit_on_mousedown) {
-                do_exit();
-                break;
-            }
         case SDL_MOUSEMOTION:
             if(event.type ==SDL_MOUSEBUTTONDOWN){
                 x= event.button.x;
@@ -3068,13 +3043,11 @@ static const OptionDef options[] = {
     { "sync", HAS_ARG | OPT_FUNC2 | OPT_EXPERT, {(void*)opt_sync}, "set audio-video sync. type (type=audio/video/ext)", "type" },
     { "threads", HAS_ARG | OPT_FUNC2 | OPT_EXPERT, {(void*)opt_thread_count}, "thread count", "count" },
     { "autoexit", OPT_BOOL | OPT_EXPERT, {(void*)&autoexit}, "exit at the end", "" },
-    { "exitonkeydown", OPT_BOOL | OPT_EXPERT, {(void*)&exit_on_keydown}, "exit on key down", "" },
-    { "exitonmousedown", OPT_BOOL | OPT_EXPERT, {(void*)&exit_on_mousedown}, "exit on mouse down", "" },
     { "loop", OPT_INT | HAS_ARG | OPT_EXPERT, {(void*)&loop}, "set number of times the playback shall be looped", "loop count" },
     { "framedrop", OPT_BOOL | OPT_EXPERT, {(void*)&framedrop}, "drop frames when cpu is too slow", "" },
     { "window_title", OPT_STRING | HAS_ARG, {(void*)&window_title}, "set window title", "window title" },
 #if CONFIG_AVFILTER
-    { "vf", OPT_STRING | HAS_ARG, {(void*)&vfilters}, "video filters", "filter list" },
+    { "vfilters", OPT_STRING | HAS_ARG, {(void*)&vfilters}, "video filters", "filter list" },
 #endif
     { "rdftspeed", OPT_INT | HAS_ARG| OPT_AUDIO | OPT_EXPERT, {(void*)&rdftspeed}, "rdft speed", "msecs" },
     { "default", OPT_FUNC2 | HAS_ARG | OPT_AUDIO | OPT_VIDEO | OPT_EXPERT, {(void*)opt_default}, "generic catch all option", "" },

@@ -103,8 +103,8 @@ static void rv34_gen_vlc(const uint8_t *bits, int size, VLC *vlc, const uint8_t 
 {
     int i;
     int counts[17] = {0}, codes[17];
-    uint16_t cw[MAX_VLC_SIZE], syms[MAX_VLC_SIZE];
-    uint8_t bits2[MAX_VLC_SIZE];
+    uint16_t cw[size], syms[size];
+    uint8_t bits2[size];
     int maxbits = 0, realsize = 0;
 
     for(i = 0; i < size; i++){
@@ -393,7 +393,7 @@ static inline void rv34_dequant4x4_16x16(DCTELEM *block, int Qdc, int Q)
 
 
 /**
- * @defgroup rv3040_bitstream RV30/40 bitstream parsing
+ * @defgroup bitstream RV30/40 bitstream parsing
  * @{
  */
 
@@ -1142,7 +1142,7 @@ static int rv34_set_deblock_coef(RV34DecContext *r)
     MpegEncContext *s = &r->s;
     int hmvmask = 0, vmvmask = 0, i, j;
     int midx = s->mb_x * 2 + s->mb_y * 2 * s->b8_stride;
-    int16_t (*motion_val)[2] = &s->current_picture_ptr->motion_val[0][midx];
+    int16_t (*motion_val)[2] = s->current_picture_ptr->motion_val[0][midx];
     for(j = 0; j < 16; j += 8){
         for(i = 0; i < 2; i++){
             if(is_mv_diff_gt_3(motion_val + i, 1))
@@ -1439,12 +1439,14 @@ int ff_rv34_decode_frame(AVCodecContext *avctx,
         slice_count = (*buf++) + 1;
         slices_hdr = buf + 4;
         buf += 8 * slice_count;
+        buf_size -= 1 + 8 * slice_count;
     }else
         slice_count = avctx->slice_count;
 
     //parse first slice header to check whether this frame can be decoded
-    if(get_slice_offset(avctx, slices_hdr, 0) > buf_size){
-        av_log(avctx, AV_LOG_ERROR, "Slice offset is greater than frame size\n");
+    if(get_slice_offset(avctx, slices_hdr, 0) < 0 ||
+       get_slice_offset(avctx, slices_hdr, 0) > buf_size){
+        av_log(avctx, AV_LOG_ERROR, "Slice offset is invalid\n");
         return -1;
     }
     init_get_bits(&s->gb, buf+get_slice_offset(avctx, slices_hdr, 0), buf_size-get_slice_offset(avctx, slices_hdr, 0));
@@ -1459,7 +1461,7 @@ int ff_rv34_decode_frame(AVCodecContext *avctx,
     if(   (avctx->skip_frame >= AVDISCARD_NONREF && si.type==FF_B_TYPE)
        || (avctx->skip_frame >= AVDISCARD_NONKEY && si.type!=FF_I_TYPE)
        ||  avctx->skip_frame >= AVDISCARD_ALL)
-        return buf_size;
+        return avpkt->size;
     /* skip everything if we are in a hurry>=5 */
     if(avctx->hurry_up>=5)
         return buf_size;
@@ -1472,8 +1474,8 @@ int ff_rv34_decode_frame(AVCodecContext *avctx,
         else
             size= get_slice_offset(avctx, slices_hdr, i+1) - offset;
 
-        if(offset > buf_size){
-            av_log(avctx, AV_LOG_ERROR, "Slice offset is greater than frame size\n");
+        if(offset < 0 || offset > buf_size || size < 0){
+            av_log(avctx, AV_LOG_ERROR, "Slice offset is invalid\n");
             break;
         }
 
@@ -1494,7 +1496,7 @@ int ff_rv34_decode_frame(AVCodecContext *avctx,
             break;
     }
 
-    if(last){
+    if(last && s->current_picture_ptr){
         if(r->loop_filter)
             r->loop_filter(r, s->mb_height - 1);
         ff_er_frame_end(s);
@@ -1511,7 +1513,7 @@ int ff_rv34_decode_frame(AVCodecContext *avctx,
         }
         s->current_picture_ptr= NULL; //so we can detect if frame_end wasnt called (find some nicer solution...)
     }
-    return buf_size;
+    return avpkt->size;
 }
 
 av_cold int ff_rv34_decode_end(AVCodecContext *avctx)

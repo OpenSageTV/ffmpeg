@@ -49,7 +49,7 @@ typedef struct TheoraContext {
     int         keyframe_mask;
 } TheoraContext;
 
-/** Concatenate an ogg_packet into the extradata. */
+/** Concatenates an ogg_packet into the extradata. */
 static int concatenate_packet(unsigned int* offset,
                               AVCodecContext* avc_context,
                               const ogg_packet* packet)
@@ -101,7 +101,7 @@ static int get_stats(AVCodecContext *avctx, int eos)
         memcpy(h->stats + h->stats_offset, buf, bytes);
         h->stats_offset += bytes;
     } else {
-        int b64_size = AV_BASE64_SIZE(h->stats_offset);
+        int b64_size = ((h->stats_offset + 2) / 3) * 4 + 1;
         // libtheora generates a summary header at the end
         memcpy(h->stats, buf, bytes);
         avctx->stats_out = av_malloc(b64_size);

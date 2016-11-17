@@ -302,7 +302,8 @@ static void create_vorbis_context(vorbis_enc_context *venc,
         };
         fc->list[i].x = a[i - 2];
     }
-    ff_vorbis_ready_floor1_list(fc->list, fc->values);
+    if (ff_vorbis_ready_floor1_list(avccontext, fc->list, fc->values))
+        return AVERROR(EINVAL);
 
     venc->nresidues = 1;
     venc->residues  = av_malloc(sizeof(vorbis_enc_residue) * venc->nresidues);
@@ -681,7 +682,7 @@ static void floor_fit(vorbis_enc_context *venc, vorbis_enc_floor *fc,
         float average = averages[i];
         int j;
 
-        average = sqrt(tot_average * average) * pow(1.25f, position*0.005f); // MAGIC!
+        average *= pow(tot_average / average, 0.5) * pow(1.25, position/200.); // MAGIC!
         for (j = 0; j < range - 1; j++)
             if (ff_vorbis_floor1_inverse_db_table[j * fc->multiplier] > average)
                 break;
@@ -915,7 +916,7 @@ static int apply_window_and_mdct(vorbis_enc_context *venc, signed short *audio,
             float * offset = venc->samples + channel*window_len*2 + window_len;
             j = channel;
             for (i = 0; i < samples; i++, j += venc->channels)
-                offset[i] = audio[j] / 32768. / n * win[window_len - i - 1];
+                offset[i] = -audio[j] / 32768. / n * win[window_len - i - 1]; //FIXME find out why the sign has to be fliped
         }
     } else {
         for (channel = 0; channel < venc->channels; channel++)
@@ -932,7 +933,7 @@ static int apply_window_and_mdct(vorbis_enc_context *venc, signed short *audio,
             float *offset = venc->saved + channel * window_len;
             j = channel;
             for (i = 0; i < samples; i++, j += venc->channels)
-                offset[i] = audio[j] / 32768. / n * win[i];
+                offset[i] = -audio[j] / 32768. / n * win[i]; //FIXME find out why the sign has to be fliped
         }
         venc->have_saved = 1;
     } else {
@@ -955,7 +956,7 @@ static av_cold int vorbis_encode_init(AVCodecContext *avccontext)
     if (avccontext->flags & CODEC_FLAG_QSCALE)
         venc->quality = avccontext->global_quality / (float)FF_QP2LAMBDA / 10.;
     else
-        venc->quality = 0.03;
+        venc->quality = 1.;
     venc->quality *= venc->quality;
 
     avccontext->extradata_size = put_main_header(venc, (uint8_t**)&avccontext->extradata);

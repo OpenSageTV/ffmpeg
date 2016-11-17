@@ -136,7 +136,6 @@ typedef struct Vp3DecodeContext {
     DSPContext dsp;
     int flipped_image;
     int last_slice_end;
-    int skip_loop_filter;
 
     int qps[3];
     int nqps;
@@ -258,7 +257,7 @@ typedef struct Vp3DecodeContext {
  * superblocks <-> fragments, macroblocks <-> fragments,
  * superblocks <-> macroblocks
  *
- * @return 0 is successful; returns 1 if *anything* went wrong.
+ * Returns 0 is successful; returns 1 if *anything* went wrong.
  */
 static int init_block_mapping(Vp3DecodeContext *s)
 {
@@ -379,15 +378,8 @@ static int unpack_superblocks(Vp3DecodeContext *s, GetBitContext *gb)
     } else {
 
         /* unpack the list of partially-coded superblocks */
-        bit = get_bits1(gb) ^ 1;
-        current_run = 0;
-
+        bit = get_bits1(gb);
         while (current_superblock < s->superblock_count && get_bits_left(gb) > 0) {
-            if (s->theora && current_run == MAXIMUM_LONG_BIT_RUN)
-                bit = get_bits1(gb);
-            else
-                bit ^= 1;
-
                 current_run = get_vlc2(gb,
                     s->superblock_run_length_vlc.table, 6, 2) + 1;
                 if (current_run == 34)
@@ -403,6 +395,11 @@ static int unpack_superblocks(Vp3DecodeContext *s, GetBitContext *gb)
             current_superblock += current_run;
             if (bit)
                 num_partial_superblocks += current_run;
+
+            if (s->theora && current_run == MAXIMUM_LONG_BIT_RUN)
+                bit = get_bits1(gb);
+            else
+                bit ^= 1;
         }
 
         /* unpack the list of fully coded superblocks if any of the blocks were
@@ -411,17 +408,9 @@ static int unpack_superblocks(Vp3DecodeContext *s, GetBitContext *gb)
             int superblocks_decoded = 0;
 
             current_superblock = 0;
-            bit = get_bits1(gb) ^ 1;
-            current_run = 0;
-
+            bit = get_bits1(gb);
             while (superblocks_decoded < s->superblock_count - num_partial_superblocks
                    && get_bits_left(gb) > 0) {
-
-                if (s->theora && current_run == MAXIMUM_LONG_BIT_RUN)
-                    bit = get_bits1(gb);
-                else
-                    bit ^= 1;
-
                         current_run = get_vlc2(gb,
                             s->superblock_run_length_vlc.table, 6, 2) + 1;
                         if (current_run == 34)
@@ -440,6 +429,11 @@ static int unpack_superblocks(Vp3DecodeContext *s, GetBitContext *gb)
                 }
                 }
                 superblocks_decoded += current_run;
+
+                if (s->theora && current_run == MAXIMUM_LONG_BIT_RUN)
+                    bit = get_bits1(gb);
+                else
+                    bit ^= 1;
             }
         }
 
@@ -806,15 +800,9 @@ static int unpack_block_qpis(Vp3DecodeContext *s, GetBitContext *gb)
     for (qpi = 0; qpi < s->nqps-1 && num_blocks > 0; qpi++) {
         i = blocks_decoded = num_blocks_at_qpi = 0;
 
-        bit = get_bits1(gb) ^ 1;
-        run_length = 0;
+        bit = get_bits1(gb);
 
         do {
-            if (run_length == MAXIMUM_LONG_BIT_RUN)
-                bit = get_bits1(gb);
-            else
-                bit ^= 1;
-
             run_length = get_vlc2(gb, s->superblock_run_length_vlc.table, 6, 2) + 1;
             if (run_length == 34)
                 run_length += get_bits(gb, 12);
@@ -832,6 +820,11 @@ static int unpack_block_qpis(Vp3DecodeContext *s, GetBitContext *gb)
                     j++;
                 }
             }
+
+            if (run_length == MAXIMUM_LONG_BIT_RUN)
+                bit = get_bits1(gb);
+            else
+                bit ^= 1;
         } while (blocks_decoded < num_blocks && get_bits_left(gb) > 0);
 
         num_blocks -= num_blocks_at_qpi;
@@ -891,7 +884,7 @@ static int unpack_vlcs(Vp3DecodeContext *s, GetBitContext *gb,
             /* decode a VLC into a token */
             token = get_vlc2(gb, vlc_table, 11, 3);
             /* use the token to get a zero run, a coefficient, and an eob run */
-            if (token <= 6) {
+            if ((unsigned) token <= 6U) {
                 eob_run = eob_run_base[token];
                 if (eob_run_get_bits[token])
                     eob_run += get_bits(gb, eob_run_get_bits[token]);
@@ -909,7 +902,7 @@ static int unpack_vlcs(Vp3DecodeContext *s, GetBitContext *gb,
                     coeff_i        += eob_run;
                     eob_run = 0;
                 }
-            } else {
+            } else if (token >= 0) {
                 bits_to_get = coeff_get_bits[token];
                 if (bits_to_get)
                     bits_to_get = get_bits(gb, bits_to_get);
@@ -943,6 +936,10 @@ static int unpack_vlcs(Vp3DecodeContext *s, GetBitContext *gb,
                 for (i = coeff_index+1; i <= coeff_index+zero_run; i++)
                     s->num_coded_frags[plane][i]--;
                 coeff_i++;
+            } else {
+                av_log(s->avctx, AV_LOG_ERROR,
+                       "Invalid token %d\n", token);
+                return -1;
             }
     }
 
@@ -992,6 +989,8 @@ static int unpack_dct_coeffs(Vp3DecodeContext *s, GetBitContext *gb)
     /* unpack the Y plane DC coefficients */
     residual_eob_run = unpack_vlcs(s, gb, &s->dc_vlc[dc_y_table], 0,
         0, residual_eob_run);
+    if (residual_eob_run < 0)
+        return residual_eob_run;
 
     /* reverse prediction of the Y-plane DC coefficients */
     reverse_dc_prediction(s, 0, s->fragment_width[0], s->fragment_height[0]);
@@ -999,8 +998,12 @@ static int unpack_dct_coeffs(Vp3DecodeContext *s, GetBitContext *gb)
     /* unpack the C plane DC coefficients */
     residual_eob_run = unpack_vlcs(s, gb, &s->dc_vlc[dc_c_table], 0,
         1, residual_eob_run);
+    if (residual_eob_run < 0)
+        return residual_eob_run;
     residual_eob_run = unpack_vlcs(s, gb, &s->dc_vlc[dc_c_table], 0,
         2, residual_eob_run);
+    if (residual_eob_run < 0)
+        return residual_eob_run;
 
     /* reverse prediction of the C-plane DC coefficients */
     if (!(s->avctx->flags & CODEC_FLAG_GRAY))
@@ -1037,11 +1040,17 @@ static int unpack_dct_coeffs(Vp3DecodeContext *s, GetBitContext *gb)
     for (i = 1; i <= 63; i++) {
             residual_eob_run = unpack_vlcs(s, gb, y_tables[i], i,
                 0, residual_eob_run);
+            if (residual_eob_run < 0)
+                return residual_eob_run;
 
             residual_eob_run = unpack_vlcs(s, gb, c_tables[i], i,
                 1, residual_eob_run);
+            if (residual_eob_run < 0)
+                return residual_eob_run;
             residual_eob_run = unpack_vlcs(s, gb, c_tables[i], i,
                 2, residual_eob_run);
+            if (residual_eob_run < 0)
+                return residual_eob_run;
     }
 
     return 0;
@@ -1270,7 +1279,7 @@ static void apply_loop_filter(Vp3DecodeContext *s, int plane, int ystart, int ye
 }
 
 /**
- * Pull DCT tokens from the 64 levels to decode and dequant the coefficients
+ * Pulls DCT tokens from the 64 levels to decode and dequant the coefficients
  * for the next block in coding order
  */
 static inline int vp3_dequant(Vp3DecodeContext *s, Vp3Fragment *frag,
@@ -1292,6 +1301,10 @@ static inline int vp3_dequant(Vp3DecodeContext *s, Vp3Fragment *frag,
         case 1: // zero run
             s->dct_tokens[plane][i]++;
             i += (token >> 2) & 0x7f;
+            if (i > 63) {
+                av_log(s->avctx, AV_LOG_ERROR, "Coefficient index overflow\n");
+                return i;
+            }
             block[perm[i]] = (token >> 9) * dequantizer[perm[i]];
             i++;
             break;
@@ -1303,6 +1316,8 @@ static inline int vp3_dequant(Vp3DecodeContext *s, Vp3Fragment *frag,
             return i;
         }
     } while (i < 64);
+    // return value is expected to be a valid level
+    i--;
 end:
     // the actual DC+prediction is in the fragment structure
     block[0] = frag->dc * s->qmat[0][inter][plane][0];
@@ -1329,7 +1344,7 @@ static void vp3_draw_horiz_band(Vp3DecodeContext *s, int y)
         y = s->height - y - h;
     }
 
-    cy = y >> s->chroma_y_shift;
+    cy = y >> 1;
     offset[0] = s->current_frame.linesize[0]*y;
     offset[1] = s->current_frame.linesize[1]*cy;
     offset[2] = s->current_frame.linesize[2]*cy;
@@ -1495,8 +1510,7 @@ static void render_slice(Vp3DecodeContext *s, int slice)
             }
 
             // Filter up to the last row in the superblock row
-            if (!s->skip_loop_filter)
-                apply_loop_filter(s, plane, 4*sb_y - !!sb_y, FFMIN(4*sb_y+3, fragment_height-1));
+            apply_loop_filter(s, plane, 4*sb_y - !!sb_y, FFMIN(4*sb_y+3, fragment_height-1));
         }
     }
 
@@ -1750,9 +1764,6 @@ static int vp3_decode_frame(AVCodecContext *avctx,
         av_log(s->avctx, AV_LOG_INFO, " VP3 %sframe #%d: Q index = %d\n",
             s->keyframe?"key":"", counter, s->qps[0]);
     counter++;
-
-    s->skip_loop_filter = !s->filter_limit_values[s->qps[0]] ||
-        avctx->skip_loop_filter >= (s->keyframe ? AVDISCARD_ALL : AVDISCARD_NONKEY);
 
     if (s->qps[0] != s->last_qps[0])
         init_loop_filter(s);

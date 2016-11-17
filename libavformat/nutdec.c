@@ -94,8 +94,8 @@ static int get_packetheader(NUTContext *nut, ByteIOContext *bc, int calculate_ch
     int64_t size;
 //    start= url_ftell(bc) - 8;
 
-    startcode= av_be2ne64(startcode);
-    startcode= ff_crc04C11DB7_update(0, (uint8_t*)&startcode, 8);
+    startcode= be2me_64(startcode);
+    startcode= ff_crc04C11DB7_update(0, &startcode, 8);
 
     init_checksum(bc, ff_crc04C11DB7_update, startcode);
     size= ff_get_v(bc);
@@ -316,9 +316,7 @@ static int decode_stream_header(NUTContext *nut){
     {
         case 0:
             st->codec->codec_type = AVMEDIA_TYPE_VIDEO;
-            st->codec->codec_id = av_codec_get_id(
-                (const AVCodecTag * const []) { ff_codec_bmp_tags, ff_nut_video_tags, 0 },
-                tmp);
+            st->codec->codec_id = ff_codec_get_id(ff_codec_bmp_tags, tmp);
             break;
         case 1:
             st->codec->codec_type = AVMEDIA_TYPE_AUDIO;
@@ -926,6 +924,5 @@ AVInputFormat nut_demuxer = {
     read_seek,
     .extensions = "nut",
     .metadata_conv = ff_nut_metadata_conv,
-    .codec_tag = (const AVCodecTag * const []) { ff_codec_bmp_tags, ff_nut_video_tags, ff_codec_wav_tags, ff_nut_subtitle_tags, 0 },
 };
 #endif

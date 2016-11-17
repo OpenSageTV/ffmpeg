@@ -58,7 +58,7 @@ typedef struct {
  */
 typedef struct {
     /**
-     * @defgroup aac_bitstream     Main bitstream data variables
+     * @defgroup bitstream     Main bitstream data variables
      * @{
      */
     unsigned           bs_frame_class;

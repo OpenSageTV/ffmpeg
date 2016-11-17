@@ -650,7 +650,6 @@ static int svq1_decode_frame(AVCodecContext *avctx,
   uint8_t        *current, *previous;
   int             result, i, x, y, width, height;
   AVFrame *pict = data;
-  svq1_pmv *pmv;
 
   /* initialize bit buffer */
   init_get_bits(&s->gb,buf,buf_size*8);
@@ -679,6 +678,7 @@ static int svq1_decode_frame(AVCodecContext *avctx,
 #endif
     return result;
   }
+  avcodec_set_dimensions(avctx, s->width, s->height);
 
   //FIXME this avoids some confusion for "B frames" without 2 references
   //this should be removed after libavcodec can handle more flexible picture types & ordering
@@ -691,10 +691,6 @@ static int svq1_decode_frame(AVCodecContext *avctx,
       return buf_size;
 
   if(MPV_frame_start(s, avctx) < 0)
-      return -1;
-
-  pmv = av_malloc((FFALIGN(s->width, 16)/8 + 3) * sizeof(*pmv));
-  if (!pmv)
       return -1;
 
   /* decode y, u and v components */
@@ -729,12 +725,13 @@ static int svq1_decode_frame(AVCodecContext *avctx,
 //#ifdef DEBUG_SVQ1
             av_log(s->avctx, AV_LOG_INFO, "Error in svq1_decode_block %i (keyframe)\n",result);
 //#endif
-            goto err;
+            return result;
           }
         }
         current += 16*linesize;
       }
     } else {
+      svq1_pmv pmv[width/8+3];
       /* delta frame */
       memset (pmv, 0, ((width / 8) + 3) * sizeof(svq1_pmv));
 
@@ -747,7 +744,7 @@ static int svq1_decode_frame(AVCodecContext *avctx,
 #ifdef DEBUG_SVQ1
     av_log(s->avctx, AV_LOG_INFO, "Error in svq1_decode_delta_block %i\n",result);
 #endif
-            goto err;
+            return result;
           }
         }
 
@@ -765,10 +762,7 @@ static int svq1_decode_frame(AVCodecContext *avctx,
   MPV_frame_end(s);
 
   *data_size=sizeof(AVFrame);
-  result = buf_size;
-err:
-  av_free(pmv);
-  return result;
+  return buf_size;
 }
 
 static av_cold int svq1_decode_init(AVCodecContext *avctx)

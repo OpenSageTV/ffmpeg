@@ -429,7 +429,7 @@ static int decode_frame(AVCodecContext *avctx,
         if (length > 0x7fffffff)
             goto fail;
         tag32 = bytestream_get_be32(&s->bytestream);
-        tag = av_bswap32(tag32);
+        tag = bswap_32(tag32);
         dprintf(avctx, "png: tag=%c%c%c%c length=%u\n",
                 (tag & 0xff),
                 ((tag >> 8) & 0xff),
@@ -487,9 +487,11 @@ static int decode_frame(AVCodecContext *avctx,
                 } else if (s->bit_depth == 1 &&
                            s->color_type == PNG_COLOR_TYPE_GRAY) {
                     avctx->pix_fmt = PIX_FMT_MONOBLACK;
-                } else if (s->color_type == PNG_COLOR_TYPE_PALETTE) {
+                } else if (s->bit_depth == 8 &&
+                           s->color_type == PNG_COLOR_TYPE_PALETTE) {
                     avctx->pix_fmt = PIX_FMT_PAL8;
-                } else if (s->color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
+                } else if (s->bit_depth == 8 &&
+                           s->color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
                     avctx->pix_fmt = PIX_FMT_Y400A;
                 } else {
                     goto fail;
@@ -667,6 +669,5 @@ AVCodec png_decoder = {
     decode_frame,
     CODEC_CAP_DR1 /*| CODEC_CAP_DRAW_HORIZ_BAND*/,
     NULL,
-    .max_lowres = 5,
     .long_name = NULL_IF_CONFIG_SMALL("PNG image"),
 };

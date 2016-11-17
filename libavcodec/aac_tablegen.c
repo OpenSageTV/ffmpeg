@@ -31,7 +31,9 @@ int main(void)
 
     write_fileheader();
 
-    WRITE_ARRAY("const", float, ff_aac_pow2sf_tab);
+    printf("const float ff_aac_pow2sf_tab[428] = {\n");
+    write_float_array(ff_aac_pow2sf_tab, 428);
+    printf("};\n");
 
     return 0;
 }

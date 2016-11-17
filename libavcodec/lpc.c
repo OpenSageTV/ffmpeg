@@ -52,7 +52,7 @@ static void apply_welch_window(const int32_t *data, int len, double *w_data)
 }
 
 /**
- * Calculate autocorrelation data from audio samples
+ * Calculates autocorrelation data from audio samples
  * A Welch window function is applied before calculation.
  */
 void ff_lpc_compute_autocorr(const int32_t *data, int len, int lag,
@@ -165,8 +165,7 @@ static int estimate_best_order(double *ref, int min_order, int max_order)
 int ff_lpc_calc_coefs(DSPContext *s,
                       const int32_t *samples, int blocksize, int min_order,
                       int max_order, int precision,
-                      int32_t coefs[][MAX_LPC_ORDER], int *shift,
-                      enum AVLPCType lpc_type, int lpc_passes,
+                      int32_t coefs[][MAX_LPC_ORDER], int *shift, int use_lpc,
                       int omethod, int max_shift, int zero_shift)
 {
     double autoc[MAX_LPC_ORDER+1];
@@ -175,21 +174,20 @@ int ff_lpc_calc_coefs(DSPContext *s,
     int i, j, pass;
     int opt_order;
 
-    assert(max_order >= MIN_LPC_ORDER && max_order <= MAX_LPC_ORDER &&
-           lpc_type > AV_LPC_TYPE_FIXED);
+    assert(max_order >= MIN_LPC_ORDER && max_order <= MAX_LPC_ORDER && use_lpc > 0);
 
-    if (lpc_type == AV_LPC_TYPE_LEVINSON) {
+    if(use_lpc == 1){
         s->lpc_compute_autocorr(samples, blocksize, max_order, autoc);
 
         compute_lpc_coefs(autoc, max_order, &lpc[0][0], MAX_LPC_ORDER, 0, 1);
 
         for(i=0; i<max_order; i++)
             ref[i] = fabs(lpc[i][i]);
-    } else if (lpc_type == AV_LPC_TYPE_CHOLESKY) {
+    }else{
         LLSModel m[2];
         double var[MAX_LPC_ORDER+1], av_uninit(weight);
 
-        for(pass=0; pass<lpc_passes; pass++){
+        for(pass=0; pass<use_lpc-1; pass++){
             av_init_lls(&m[pass&1], max_order);
 
             weight=0;

@@ -36,7 +36,7 @@ function ff_synth_filter_float_neon, export=1
         mov             r9,  r1                 @ synth_buf
 
 VFP     vpush           {d0}
-        bl              X(ff_imdct_half_neon)
+        bl              ff_imdct_half_neon
 VFP     vpop            {d0}
         pop             {r3}
 

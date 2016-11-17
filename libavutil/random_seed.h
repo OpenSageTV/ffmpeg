@@ -24,8 +24,8 @@
 #include <stdint.h>
 
 /**
- * Get a seed to use in conjunction with random functions.
+ * Gets a seed to use in conjunction with random functions.
  */
-uint32_t av_get_random_seed(void);
+uint32_t ff_random_get_seed(void);
 
 #endif /* AVUTIL_RANDOM_SEED_H */

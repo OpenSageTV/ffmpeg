@@ -280,6 +280,10 @@ static int cdg_decode_frame(AVCodecContext *avctx,
         av_log(avctx, AV_LOG_ERROR, "buffer too small for decoder\n");
         return AVERROR(EINVAL);
     }
+    if (buf_size > CDG_HEADER_SIZE + CDG_DATA_SIZE) {
+        av_log(avctx, AV_LOG_ERROR, "buffer too big for decoder\n");
+        return AVERROR(EINVAL);
+    }
 
     ret = avctx->reget_buffer(avctx, &cc->frame);
     if (ret) {
@@ -377,6 +381,5 @@ AVCodec cdgraphics_decoder = {
     cdg_decode_end,
     cdg_decode_frame,
     CODEC_CAP_DR1,
-    .max_lowres = 5,
     .long_name = NULL_IF_CONFIG_SMALL("CD Graphics video"),
 };

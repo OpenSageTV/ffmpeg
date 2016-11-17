@@ -46,17 +46,19 @@
 #endif
 #endif
 
-
-/**
- * Mark a variable as used and prevent the compiler from optimizing it away.
- * This is useful for asm that accesses varibles in ways that the compiler does not
- * understand
- */
 #ifndef attribute_used
 #if AV_GCC_VERSION_AT_LEAST(3,1)
 #    define attribute_used __attribute__((used))
 #else
 #    define attribute_used
+#endif
+#endif
+
+#ifndef av_alias
+#if HAVE_ATTRIBUTE_MAY_ALIAS && (!defined(__ICC) || __ICC > 1110) && AV_GCC_VERSION_AT_LEAST(3,3)
+#   define av_alias __attribute__((may_alias))
+#else
+#   define av_alias
 #endif
 #endif
 
@@ -192,7 +194,7 @@
 #include "libm.h"
 
 /**
- * Return NULL if CONFIG_SMALL is true, otherwise the argument
+ * Returns NULL if CONFIG_SMALL is true, otherwise the argument
  * without modification. Used to disable the definition of strings
  * (for example AVCodec long_names).
  */
@@ -202,24 +204,6 @@
 #   define NULL_IF_CONFIG_SMALL(x) x
 #endif
 
-
-/**
- * Define a function with only the non-default version specified.
- *
- * On systems with ELF shared libraries, all symbols exported from
- * FFmpeg libraries are tagged with the name and major version of the
- * library to which they belong.  If a function is moved from one
- * library to another, a wrapper must be retained in the original
- * location to preserve binary compatibility.
- *
- * Functions defined with this macro will never be used to resolve
- * symbols by the build-time linker.
- *
- * @param type return type of function
- * @param name name of function
- * @param args argument list of function
- * @param ver  version tag to assign function
- */
 #if HAVE_SYMVER_ASM_LABEL
 #   define FF_SYMVER(type, name, args, ver)                     \
     type ff_##name args __asm__ (EXTERN_PREFIX #name "@" ver);  \

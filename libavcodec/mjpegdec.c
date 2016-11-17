@@ -792,6 +792,10 @@ static int mjpeg_decode_scan(MJpegDecodeContext *s, int nb_components, int Ah, i
             if (s->restart_interval && !s->restart_count)
                 s->restart_count = s->restart_interval;
 
+            if(get_bits_count(&s->gb)>s->gb.size_in_bits){
+                av_log(s->avctx, AV_LOG_ERROR, "overread %d\n", get_bits_count(&s->gb) - s->gb.size_in_bits);
+                return -1;
+            }
             for(i=0;i<nb_components;i++) {
                 uint8_t *ptr;
                 int n, h, v, x, y, c, j;
@@ -835,9 +839,12 @@ static int mjpeg_decode_scan(MJpegDecodeContext *s, int nb_components, int Ah, i
                 }
             }
 
-            if (s->restart_interval && !--s->restart_count) {
+            if (s->restart_interval && show_bits(&s->gb, 8) == 0xFF){ /* skip RSTn */
+                --s->restart_count;
                 align_get_bits(&s->gb);
-                skip_bits(&s->gb, 16); /* skip RSTn */
+                while(show_bits(&s->gb, 8) == 0xFF)
+                    skip_bits(&s->gb, 8);
+                skip_bits(&s->gb, 8);
                 for (i=0; i<nb_components; i++) /* reset dc */
                     s->last_dc[i] = 1024;
             }
@@ -1027,7 +1034,7 @@ static int mjpeg_decode_app(MJpegDecodeContext *s)
         return -1;
 
     id = (get_bits(&s->gb, 16) << 16) | get_bits(&s->gb, 16);
-    id = av_be2ne32(id);
+    id = be2me_32(id);
     len -= 6;
 
     if(s->avctx->debug & FF_DEBUG_STARTCODE){
@@ -1134,7 +1141,7 @@ static int mjpeg_decode_app(MJpegDecodeContext *s)
     if ((s->start_code == APP1) && (len > (0x28 - 8)))
     {
         id = (get_bits(&s->gb, 16) << 16) | get_bits(&s->gb, 16);
-        id = av_be2ne32(id);
+        id = be2me_32(id);
         len -= 4;
         if (id == AV_RL32("mjpg")) /* Apple MJPEG-A */
         {
@@ -1542,7 +1549,6 @@ AVCodec mjpeg_decoder = {
     ff_mjpeg_decode_frame,
     CODEC_CAP_DR1,
     NULL,
-    .max_lowres = 8,
     .long_name = NULL_IF_CONFIG_SMALL("MJPEG (Motion JPEG)"),
 };
 
@@ -1557,6 +1563,5 @@ AVCodec thp_decoder = {
     ff_mjpeg_decode_frame,
     CODEC_CAP_DR1,
     NULL,
-    .max_lowres = 3,
     .long_name = NULL_IF_CONFIG_SMALL("Nintendo Gamecube THP video"),
 };
