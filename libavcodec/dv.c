@@ -1101,6 +1101,7 @@ static int dvvideo_decode_frame(AVCodecContext *avctx,
         av_log(avctx, AV_LOG_ERROR, "get_buffer() failed\n");
         return -1;
     }
+	avctx->interlaced = s->sys->video_stype != 0x18; // (only type 0x18 is progressive)
     s->picture.interlaced_frame = 1;
     s->picture.top_field_first  = 0;
 

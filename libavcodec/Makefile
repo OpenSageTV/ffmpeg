@@ -526,6 +526,7 @@ OBJS-$(CONFIG_WEBM_MUXER)              += xiph.o mpeg4audio.o \
 OBJS-$(CONFIG_LIBDIRAC_DECODER)           += libdiracdec.o
 OBJS-$(CONFIG_LIBDIRAC_ENCODER)           += libdiracenc.o libdirac_libschro.o
 OBJS-$(CONFIG_LIBFAAC_ENCODER)            += libfaac.o
+OBJS-$(CONFIG_LIBFAAD_DECODER)            += latmaac.o
 OBJS-$(CONFIG_LIBGSM_DECODER)             += libgsm.o
 OBJS-$(CONFIG_LIBGSM_ENCODER)             += libgsm.o
 OBJS-$(CONFIG_LIBGSM_MS_DECODER)          += libgsm.o
@@ -551,7 +552,7 @@ OBJS-$(CONFIG_LIBXVID)                    += libxvidff.o libxvid_rc.o
 
 # parsers
 OBJS-$(CONFIG_AAC_PARSER)              += aac_parser.o aac_ac3_parser.o \
-                                          aacadtsdec.o mpeg4audio.o
+                                          aacadtsdec.o mpeg4audio.o latm_parser.o
 OBJS-$(CONFIG_AC3_PARSER)              += ac3_parser.o ac3tab.o \
                                           aac_ac3_parser.o
 OBJS-$(CONFIG_CAVSVIDEO_PARSER)        += cavs_parser.o

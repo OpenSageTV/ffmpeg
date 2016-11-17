@@ -46,6 +46,32 @@ av_metadata_get(AVMetadata *m, const char *key, const AVMetadataTag *prev, int f
     return NULL;
 }
 
+static void print_metadata(AVMetadata *m)
+{
+	unsigned int i;
+	
+	if (!m)
+		return;
+	
+	for (i = 0; i < m->count; i++) {
+		if (m->elems[i].key && m->elems[i].value)
+			av_log(NULL, AV_LOG_INFO, "META:%s=%s\n", m->elems[i].key, m->elems[i].value);
+	}
+}
+
+void av_metadata_dump(struct AVFormatContext *ic)
+{
+	unsigned int i;
+	
+	if (!ic)
+		return;
+	
+	print_metadata(ic->metadata);
+	
+	for (i = 0; i < ic->nb_streams; i++)
+		print_metadata(ic->streams[i]->metadata);
+}
+
 int av_metadata_set2(AVMetadata **pm, const char *key, const char *value, int flags)
 {
     AVMetadata *m= *pm;

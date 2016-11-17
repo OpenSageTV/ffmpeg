@@ -22,7 +22,11 @@
 #include "libavutil/avstring.h"
 #include "avformat.h"
 #include <fcntl.h>
-#if HAVE_SETMODE
+// for nanosleep on non-Win platforms
+#ifndef __MINGW32__
+#include <time.h>
+#endif
+#if HAVE_SETMODE || defined(__MINGW32__)
 #include <io.h>
 #endif
 #include <unistd.h>
@@ -36,7 +40,27 @@
 static int file_read(URLContext *h, unsigned char *buf, int size)
 {
     int fd = (intptr_t) h->priv_data;
-    return read(fd, buf, size);
+    int rv;
+	do
+	{
+		rv = read(fd, buf, size);
+		if (rv <= 0 && ((h->flags & URL_ACTIVEFILE) == URL_ACTIVEFILE))
+		{
+#ifdef __MINGW32__
+				usleep(20000);
+#else
+				struct timespec ts;
+				ts.tv_sec = 0;
+				ts.tv_nsec = 20000000;
+				nanosleep(&ts, NULL);
+#endif
+	        if (url_interrupt_cb())
+	            return -EINTR;
+ 		}
+		else
+			break;
+	} while (1);
+	return rv;
 }
 
 static int file_write(URLContext *h, const unsigned char *buf, int size)
@@ -69,7 +93,42 @@ static int file_open(URLContext *h, const char *filename, int flags)
 #ifdef O_BINARY
     access |= O_BINARY;
 #endif
+#ifdef __MINGW32__
+	// Check for UTF-8 unicode pathname
+	int strl = strlen(filename);
+	wchar_t* wfilename = av_malloc(sizeof(wchar_t) * (1 + strl));
+	int wpos = 0;
+	int i = 0;
+	for (i = 0; i < strl; i++)
+	{
+		wfilename[wpos] = 0;
+		if ((filename[i] & 0x80) == 0)
+		{
+			// ASCII character
+			wfilename[wpos++] = filename[i];
+		}
+		else if (i + 1 < strl && ((filename[i] & 0xE0) == 0xC0) && ((filename[i + 1] & 0xC0) == 0x80))
+		{
+			// two octets for this character
+			wfilename[wpos++] = ((filename[i] & 0x1F) << 6) + (filename[i + 1] & 0x3F);
+			i++;
+		}
+		else if (i + 2 < strl && ((filename[i] & 0xF0) == 0xE0) && ((filename[i + 1] & 0xC0) == 0x80) && 
+			((filename[i + 2] & 0xC0) == 0x80))
+		{
+			// three octets for this character
+			wfilename[wpos++] = ((filename[i] & 0x0F) << 12) + ((filename[i + 1] & 0x3F) << 6) + (filename[i + 2] & 0x3F);
+			i+=2;
+		}
+		else
+			wfilename[wpos++] = filename[i];
+	}
+	wfilename[wpos] = 0;
+	fd = _wopen(wfilename, access, 0666);
+	av_free(wfilename);
+#else
     fd = open(filename, access, 0666);
+#endif
     if (fd == -1)
         return AVERROR(errno);
     h->priv_data = (void *) (intptr_t) fd;

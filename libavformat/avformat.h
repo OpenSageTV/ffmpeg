@@ -160,6 +160,12 @@ attribute_deprecated int av_metadata_set(AVMetadata **pm, const char *key, const
 int av_metadata_set2(AVMetadata **pm, const char *key, const char *value, int flags);
 
 /**
+ * Reports the metadata in the given context. Data for the context and
+ * for each of the streams are reported.
+ */
+void av_metadata_dump(struct AVFormatContext *ic);
+
+/**
  * Convert all the metadata sets from ctx according to the source and
  * destination conversion tables. If one of the tables is NULL, then
  * tags are converted to/from ffmpeg generic tag names.

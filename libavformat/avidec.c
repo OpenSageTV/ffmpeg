@@ -159,6 +159,7 @@ static int read_braindead_odml_indx(AVFormatContext *s, int frame_num){
     if(index_type>1)
         return -1;
 
+
     if(filesize > 0 && base >= filesize){
         av_log(s, AV_LOG_ERROR, "ODML index invalid\n");
         if(base>>32 == (base & 0xFFFFFFFF) && (base & 0xFFFFFFFF) < filesize && filesize <= 0xFFFFFFFF)
@@ -166,6 +167,7 @@ static int read_braindead_odml_indx(AVFormatContext *s, int frame_num){
         else
             return -1;
     }
+
 
     for(i=0; i<entries_in_use; i++){
         if(index_type){
@@ -285,7 +287,7 @@ static int avi_read_header(AVFormatContext *s, AVFormatParameters *ap)
     int codec_type, stream_index, frame_period, bit_rate;
     unsigned int size;
     int i;
-    AVStream *st;
+    AVStream *st = NULL;
     AVIStream *ast = NULL;
     int avih_width=0, avih_height=0;
     int amv_file_format=0;
@@ -454,7 +456,7 @@ static int avi_read_header(AVFormatContext *s, AVFormatParameters *ap)
             get_le32(pb); /* quality */
             ast->sample_size = get_le32(pb); /* sample ssize */
             ast->cum_len *= FFMAX(1, ast->sample_size);
-//            av_log(s, AV_LOG_DEBUG, "%d %d %d %d\n", ast->rate, ast->scale, ast->start, ast->sample_size);
+//            av_log(s, AV_LOG_ERROR, "%d %d %d\n",  ast->rate, ast->scale, ast->sample_size);
 
             switch(tag1) {
             case MKTAG('v', 'i', 'd', 's'):
@@ -610,7 +612,7 @@ static int avi_read_header(AVFormatContext *s, AVFormatParameters *ap)
         case MKTAG('i', 'n', 'd', 'x'):
             i= url_ftell(pb);
             if(!url_is_streamed(pb) && !(s->flags & AVFMT_FLAG_IGNIDX)){
-                read_braindead_odml_indx(s, 0);
+			      		read_braindead_odml_indx(s, 0);
             }
             url_fseek(pb, i+size, SEEK_SET);
             break;
@@ -741,7 +743,13 @@ static int avi_read_packet(AVFormatContext *s, AVPacket *pkt)
             }
         }
         if(!best_st)
-            return -1;
+        {
+            // JFT, we don't have a start point, try going where we found MOVI
+            url_fseek(s->pb, avi->movi_list + 8, SEEK_SET);
+            //return -1;
+        }
+        else
+        {
 
         best_ast = best_st->priv_data;
         best_ts = av_rescale_q(best_ts, (AVRational){FFMAX(1, best_ast->sample_size), AV_TIME_BASE}, best_st->time_base);
@@ -766,6 +774,7 @@ static int avi_read_packet(AVFormatContext *s, AVPacket *pkt)
             if(!best_ast->remaining)
                 best_ast->packet_size=
                 best_ast->remaining= best_st->index_entries[i].size;
+        }
         }
     }
 

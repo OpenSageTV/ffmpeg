@@ -126,11 +126,21 @@ static int mpegps_read_header(AVFormatContext *s,
 static int64_t get_pts(ByteIOContext *pb, int c)
 {
     uint8_t buf[5];
+	int64_t rv;
 
     buf[0] = c<0 ? get_byte(pb) : c;
     get_buffer(pb, buf+1, 4);
 
-    return ff_parse_pes_pts(buf);
+	rv = ff_parse_pes_pts(buf);
+	
+	if (rv > (0x200000000LL - 30LL*90000LL))
+	{
+		// NARFLEX: This is in here to deal with MPEG2 files I keep running into that start with timestamps
+		// that are just about to rollover at 2^33 at the start of the file
+		// (a half second of audio usually at the start before it rolls over, and the video starts at zero)
+		rv = rv - 0x200000000LL;
+	}
+	return rv;
 }
 
 static int find_next_start_code(ByteIOContext *pb, int *size_ptr,
@@ -288,10 +298,32 @@ static int mpegps_read_pes_header(AVFormatContext *s,
         goto redo;
     }
 
+	/* STV: special case broken PS files produced by a bug in our muxer that created 0x00000100 start codes on some audio PES packets */
+	if(startcode == 0x100) {
+		int64_t loc = url_ftell(s->pb); 	// so we can rewind if necessary
+		int nextstart;
+		uint32_t hstate = 0xff;
+		len = get_be16(s->pb);
+		url_fskip(s->pb, len);	// skip past invalid PES packet (but has valid size)
+		
+		// check for valid start code
+		size = 8;
+		nextstart = find_next_start_code(s->pb, &size, &hstate);
+		if(nextstart != -1) {
+			// found valid start code, rewind a bit and goto redo
+			last_sync = loc + len;
+			goto error_redo;
+		}
+		
+		// probably just a corrupt stream, rewind and resume
+		url_fseek(s->pb, loc, SEEK_SET);
+		goto redo;
+	}
+	
     /* find matching stream */
     if (!((startcode >= 0x1c0 && startcode <= 0x1df) ||
           (startcode >= 0x1e0 && startcode <= 0x1ef) ||
-          (startcode == 0x1bd) || (startcode == 0x1fd)))
+          (startcode == 0x1bd) || (startcode == 0x1fa) || (startcode == 0x1fd)))
         goto redo;
     if (ppos) {
         *ppos = url_ftell(s->pb) - 4;
@@ -379,7 +411,10 @@ static int mpegps_read_pes_header(AVFormatContext *s,
     else if( c!= 0xf )
         goto redo;
 
-    if (startcode == PRIVATE_STREAM_1 && !m->psm_es_type[startcode & 0xff]) {
+	// NARFLEX - I have no idea why they don't strip off the audio header junk
+	// if there's a PSM. I guess they assume then those headers aren't there; but that
+	// don't work for our PSMs
+    if (startcode == PRIVATE_STREAM_1 /*&& !m->psm_es_type[startcode & 0xff]*/) {
         startcode = get_byte(s->pb);
         len--;
         if (startcode >= 0x80 && startcode <= 0xcf) {
@@ -458,6 +493,9 @@ static int mpegps_read_packet(AVFormatContext *s,
         } else if(es_type == STREAM_TYPE_AUDIO_AAC){
             codec_id = CODEC_ID_AAC;
             type = AVMEDIA_TYPE_AUDIO;
+        } else if(es_type == STREAM_TYPE_AUDIO_AAC_LATM){
+            codec_id = CODEC_ID_AAC_LATM;
+            type = AVMEDIA_TYPE_AUDIO;
         } else if(es_type == STREAM_TYPE_VIDEO_MPEG4){
             codec_id = CODEC_ID_MPEG4;
             type = AVMEDIA_TYPE_VIDEO;
@@ -468,9 +506,15 @@ static int mpegps_read_packet(AVFormatContext *s,
             codec_id = CODEC_ID_AC3;
             type = AVMEDIA_TYPE_AUDIO;
         } else {
-            goto skip;
+            // JFT: If we don't know the type use other detection methods
+            es_type=0;
         }
-    } else if (startcode >= 0x1e0 && startcode <= 0x1ef) {
+    }
+
+    if(es_type > 0 && es_type != STREAM_TYPE_PRIVATE_DATA){
+        // Nothing left to do
+    }
+    else if (startcode >= 0x1e0 && startcode <= 0x1ef) {
         static const unsigned char avs_seqh[4] = { 0, 0, 1, 0xb0 };
         unsigned char buf[8];
         get_buffer(s->pb, buf, 8);

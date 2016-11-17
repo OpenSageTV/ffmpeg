@@ -89,6 +89,20 @@ static int X264_frame(AVCodecContext *ctx, uint8_t *buf,
     int nnal, i;
     x264_picture_t pic_out;
 
+	// NARFLEX: See if the bitrate information has changed, and if so, reconfigure the encoder
+	if (ctx->bit_rate/1000 != x4->params.rc.i_bitrate)
+	{
+		int res;
+		int rateAdjust = ctx->bit_rate/1000 - x4->params.rc.i_bitrate;
+		av_log(ctx, AV_LOG_INFO, "x264 encoder detected bitrate adjustment by %d kbps\n", rateAdjust);
+	    x4->params.rc.i_bitrate         += rateAdjust;
+	    x4->params.rc.i_vbv_max_bitrate += rateAdjust;
+		x4->params.rc.f_rate_tolerance = (float)ctx->bit_rate_tolerance/ctx->bit_rate;
+		res = x264_encoder_reconfig(x4->enc, &(x4->params));
+		if (res)
+			av_log(ctx, AV_LOG_ERROR, "x264 encoder reconfig failed! res=%d\n", res);
+	}
+
     x264_picture_init( &x4->pic );
     x4->pic.img.i_csp   = X264_CSP_I420;
     x4->pic.img.i_plane = 3;

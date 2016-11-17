@@ -25,6 +25,7 @@
  */
 
 #include "config.h"
+#include "log.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -72,6 +73,7 @@ void *av_malloc(unsigned int size)
     if(size > (INT_MAX-16) )
         return NULL;
 
+
 #if CONFIG_MEMALIGN_HACK
     ptr = malloc(size+16);
     if(!ptr)
@@ -116,6 +118,9 @@ void *av_malloc(unsigned int size)
     return ptr;
 }
 
+#undef fprintf
+#undef fflush
+
 void *av_realloc(void *ptr, unsigned int size)
 {
 #if CONFIG_MEMALIGN_HACK
@@ -126,6 +131,9 @@ void *av_realloc(void *ptr, unsigned int size)
     if(size > (INT_MAX-16) )
         return NULL;
 
+	/* catch cases of runaway memor allocation */
+	if(size > (16*1024*1024))	// warning if > 16 megs
+		fprintf(stderr, "WARNING: Large av_realloc, size=%d\n", size);
 #if CONFIG_MEMALIGN_HACK
     //FIXME this isn't aligned correctly, though it probably isn't needed
     if(!ptr) return av_malloc(size);
@@ -135,6 +143,7 @@ void *av_realloc(void *ptr, unsigned int size)
     return realloc(ptr, size);
 #endif
 }
+
 
 void av_free(void *ptr)
 {

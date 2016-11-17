@@ -64,6 +64,8 @@ typedef struct URLPollEntry {
 #define URL_RDONLY 0
 #define URL_WRONLY 1
 #define URL_RDWR   2
+// Active files are files that are open and being written to (for DVR transcoding)
+#define URL_ACTIVEFILE 1024
 
 typedef int URLInterruptCB(void);
 

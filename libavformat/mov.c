@@ -19,7 +19,10 @@
  * License along with FFmpeg; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
-
+// for nanosleep on non-Win platforms
+#ifndef __MINGW32__
+#include <time.h>
+#endif
 #include <limits.h>
 
 //#define DEBUG
@@ -34,6 +37,7 @@
 #include "libavcodec/mpeg4audio.h"
 #include "libavcodec/mpegaudiodata.h"
 #include "libavcodec/get_bits.h"
+#include <strings.h>
 
 #if CONFIG_ZLIB
 #include <zlib.h>
@@ -83,12 +87,13 @@ static const MOVParseTableEntry mov_default_parse_table[];
 static int mov_metadata_trkn(MOVContext *c, ByteIOContext *pb, unsigned len)
 {
     char buf[16];
+	int data1, data2;
 
     get_be16(pb); // unknown
-    snprintf(buf, sizeof(buf), "%d", get_be16(pb));
+	data1 = get_be16(pb); // Track
+	data2 = get_be16(pb); // TotalTracks
+    snprintf(buf, sizeof(buf), "%d/%d", data1, data2); // track/total tracks
     av_metadata_set2(&c->fc->metadata, "track", buf, 0);
-
-    get_be16(pb); // total tracks
 
     return 0;
 }
@@ -142,25 +147,26 @@ static int mov_read_udta_string(MOVContext *c, ByteIOContext *pb, MOVAtom atom)
     int (*parse)(MOVContext*, ByteIOContext*, unsigned) = NULL;
 
     switch (atom.type) {
-    case MKTAG(0xa9,'n','a','m'): key = "title";     break;
-    case MKTAG(0xa9,'a','u','t'):
-    case MKTAG(0xa9,'A','R','T'): key = "artist";    break;
-    case MKTAG(0xa9,'w','r','t'): key = "composer";  break;
+    case MKTAG(0xa9,'n','a','m'): key = "Title";     break;
+    case MKTAG( 'a','A','R','T'): key = "AlbumArtist"; break; // FIXME: Also in 'data' parser
+    case MKTAG(0xa9,'a','u','t'): key = "Author";    break;
+    case MKTAG(0xa9,'A','R','T'): key = "Artist";    break;
+    case MKTAG(0xa9,'w','r','t'): key = "Composer";  break;
     case MKTAG( 'c','p','r','t'):
-    case MKTAG(0xa9,'c','p','y'): key = "copyright"; break;
+    case MKTAG(0xa9,'c','p','y'): key = "Copyright"; break;
     case MKTAG(0xa9,'c','m','t'):
-    case MKTAG(0xa9,'i','n','f'): key = "comment";   break;
-    case MKTAG(0xa9,'a','l','b'): key = "album";     break;
-    case MKTAG(0xa9,'d','a','y'): key = "date";      break;
-    case MKTAG(0xa9,'g','e','n'): key = "genre";     break;
+    case MKTAG(0xa9,'i','n','f'): key = "Comment";   break;
+    case MKTAG(0xa9,'a','l','b'): key = "Album";     break;
+    case MKTAG(0xa9,'d','a','y'): key = "Year";      break;
+    case MKTAG(0xa9,'g','e','n'): key = "Genre";     break;
     case MKTAG(0xa9,'t','o','o'):
-    case MKTAG(0xa9,'e','n','c'): key = "encoder";   break;
+    case MKTAG(0xa9,'e','n','c'): key = "Muxer";   break;
     case MKTAG( 'd','e','s','c'): key = "description";break;
     case MKTAG( 'l','d','e','s'): key = "synopsis";  break;
     case MKTAG( 't','v','s','h'): key = "show";      break;
     case MKTAG( 't','v','e','n'): key = "episode_id";break;
     case MKTAG( 't','v','n','n'): key = "network";   break;
-    case MKTAG( 't','r','k','n'): key = "track";
+    case MKTAG( 't','r','k','n'): key = "Track";
         parse = mov_metadata_trkn; break;
     }
 
@@ -204,6 +210,9 @@ static int mov_read_udta_string(MOVContext *c, ByteIOContext *pb, MOVAtom atom)
             get_buffer(pb, str, str_size);
             str[str_size] = 0;
         }
+		// SageTV: Truncate "year" so it really only reports the year instead of the full date
+		if (!strncasecmp(key, "year", 4) && str_size > 4)
+			str[4] = 0;
         av_metadata_set2(&c->fc->metadata, key, str, 0);
         if (*language && strcmp(language, "und")) {
             snprintf(key2, sizeof(key2), "%s-%s", key, language);
@@ -303,8 +312,9 @@ static int mov_read_default(MOVContext *c, ByteIOContext *pb, MOVAtom atom)
             int err = parse(c, pb, a);
             if (err < 0)
                 return err;
-            if (c->found_moov && c->found_mdat &&
-                (url_is_streamed(pb) || start_pos + a.size == url_fsize(pb)))
+			// DrD: disable stream check as it prevents us from playing active files being downloaded
+            if (c->found_moov && c->found_mdat/* &&
+                (url_is_streamed(pb) || start_pos + a.size == url_fsize(pb))*/)
                 return 0;
             left = a.size - url_ftell(pb) + start_pos;
             if (left > 0) /* skip garbage at atom end */
@@ -2195,6 +2205,90 @@ static int mov_read_elst(MOVContext *c, ByteIOContext *pb, MOVAtom atom)
     return 0;
 }
 
+static int mov_read_data(MOVContext *c, ByteIOContext *pb, MOVAtom atom)
+{
+	int data_len, int_data;
+	long data_type;
+	char *key = NULL;
+	char value[32] = "";
+	
+    data_len = get_be32(pb);
+    if (get_le32(pb) != MKTAG( 'd', 'a', 't', 'a' ))
+        return 0;
+
+    switch (atom.type) {
+			// SageTV added tags
+		case MKTAG('g','n','r','e'): key = "GenreIDBase1"; break;
+		case MKTAG('a','A','R','T'): key = "AlbumArtist";  break;
+		case MKTAG('d','i','s','k'): key = "Disk";         break;
+		case MKTAG('c','p','i','l'): key = "Compilation";  break;
+		default:
+			return 0;
+	}
+	
+	/* Data Types
+	 * 0 - integer (variable size)
+	 * 1 - character array
+	 * 
+	 */
+    data_type = get_be32(pb); /* data type */
+    get_be32(pb); /* junk */
+	data_len -= 16;
+	int_data = 0;
+	switch (data_type)
+	{
+		case 0: // ints
+		case 21: // boolean
+			if (data_len >= 6) {
+				int int_data1, int_data2;
+				get_be16(pb);
+				int_data1 = get_be16(pb);
+				int_data2 = get_be16(pb);
+				snprintf(value, sizeof(value), "%d/%d", int_data1, int_data2);
+			} else if (data_len >= 2) {
+				int_data = get_be16(pb);
+				snprintf(value, sizeof(value), "%d", int_data);
+			} else {
+				int_data = get_byte(pb);
+				snprintf(value, sizeof(value), "%d", int_data);
+			}
+			break;
+		default:
+		case 1:		// character data, should be handled by mov_read_udta_string instead!
+			break;
+	}
+	
+	if (key && strlen(value))
+		av_metadata_set(&c->fc->metadata, key, value);
+	
+	return 0;
+}
+
+/* 'meta' cover art atom */
+static int mov_read_covr(MOVContext *c, ByteIOContext *pb, MOVAtom atom)
+{
+    int pos,data_len;
+	char value[64];
+    data_len = get_be32(pb);
+    if (get_le32(pb) != MKTAG( 'd', 'a', 't', 'a' ))
+        return 0;
+	/* Data Types
+	 * 0 - integer (variable size)
+	 * 1 - character array
+	 * 
+	 */
+    get_be32(pb); /* data type */
+    get_be32(pb); /* junk */
+	data_len -= 16;
+	pos = (int) url_ftell(pb);
+	
+	// set metadata: key "Picture", value "pos,data_len"
+	snprintf(value, sizeof(value), "%d,%d", pos, data_len);
+	av_metadata_set(&c->fc->metadata, "Picture", value);
+	
+	return 0;
+}
+
 static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('a','v','s','s'), mov_read_extradata },
 { MKTAG('c','h','p','l'), mov_read_chpl },
@@ -2247,8 +2341,24 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('e','s','d','s'), mov_read_esds },
 { MKTAG('w','i','d','e'), mov_read_wide }, /* place holder */
 { MKTAG('c','m','o','v'), mov_read_cmov },
+
+// SageTV added tags
+{ MKTAG('g','n','r','e'), mov_read_data },
+// { MKTAG('a','A','R','T'), mov_read_data }, String? Should be handled by mov_read_udta_string
+{ MKTAG('d','i','s','k'), mov_read_data },
+{ MKTAG('c','p','i','l'), mov_read_data },
+{ MKTAG('c','o','v','r'), mov_read_covr },
+
 { 0, NULL }
 };
+
+static void mov_free_stream_context(MOVStreamContext *sc)
+{
+    if(sc) {
+        av_freep(&sc->ctts_data);
+        av_freep(&sc);
+    }
+}
 
 static int mov_probe(AVProbeData *p)
 {
@@ -2257,6 +2367,8 @@ static int mov_probe(AVProbeData *p)
     int score = 0;
 
     /* check file header */
+    if (p->buf_size <= 12)
+        return 0;
     offset = 0;
     for(;;) {
         /* ignore invalid offset */
@@ -2371,7 +2483,7 @@ static int mov_read_header(AVFormatContext *s, AVFormatParameters *ap)
 
     mov->fc = s;
     /* .mov and .mp4 aren't streamable anyway (only progressive download if moov is before mdat) */
-    if(!url_is_streamed(pb))
+    if(!url_is_streamed(pb) && ((((URLContext *) pb->opaque)->flags & URL_ACTIVEFILE) != URL_ACTIVEFILE))
         atom.size = url_fsize(pb);
     else
         atom.size = INT64_MAX;
@@ -2392,6 +2504,8 @@ static int mov_read_header(AVFormatContext *s, AVFormatParameters *ap)
 
     return 0;
 }
+
+extern int av_get_packet_nobuf(ByteIOContext *s, AVPacket *pkt, int size, int64_t pos);
 
 static AVIndexEntry *mov_find_next_sample(AVFormatContext *s, AVStream **st)
 {
@@ -2425,6 +2539,7 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
     MOVStreamContext *sc;
     AVIndexEntry *sample;
     AVStream *st = NULL;
+	int activeWaitsLeft = 600;
     int ret;
  retry:
     sample = mov_find_next_sample(s, &st);
@@ -2442,14 +2557,33 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
     sc->current_sample++;
 
     if (st->discard != AVDISCARD_ALL) {
-        if (url_fseek(sc->pb, sample->pos, SEEK_SET) != sample->pos) {
-            av_log(mov->fc, AV_LOG_ERROR, "stream %d, offset 0x%"PRIx64": partial file\n",
-                   sc->ffindex, sample->pos);
-            return -1;
-        }
-        ret = av_get_packet(sc->pb, pkt, sample->size);
+	    while (sample->pos >= url_fsize(s->pb)) 
+		{
+			int activeFile = ((((URLContext *) s->pb->opaque)->flags & URL_ACTIVEFILE) == URL_ACTIVEFILE);
+			if (activeFile)
+				break;
+			if (activeFile && activeWaitsLeft-- > 0)
+			{
+#ifdef __MINGW32__
+				usleep(50000);
+#else
+				struct timespec ts;
+				ts.tv_sec = 0;
+				ts.tv_nsec = 50000000;
+				nanosleep(&ts, NULL);
+#endif
+				continue;
+			}
+	        av_log(mov->fc, AV_LOG_ERROR, "stream %d, offset 0x%"PRIx64": partial file\n", sc->ffindex, sample->pos);
+	        return -1;
+	    }
+	    ret = av_get_packet_nobuf(s->pb, pkt, sample->size, sample->pos);
         if (ret < 0)
+    	{
+        	av_log(NULL, AV_LOG_ERROR, "error reading with av_get_packet_nobuf at 0x%"PRIx64" with size %d\n",
+            	sample->pos, sample->size);
             return ret;
+		}
 #if CONFIG_DV_DEMUXER
         if (mov->dv_demux && sc->dv_audio_container) {
             dv_produce_packet(mov->dv_demux, pkt, pkt->data, pkt->size);

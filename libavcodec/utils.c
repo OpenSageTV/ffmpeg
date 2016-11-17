@@ -880,6 +880,7 @@ void avcodec_string(char *buf, int buf_size, AVCodecContext *enc, int encode)
             snprintf(buf + strlen(buf), buf_size - strlen(buf),
                      ", %dx%d",
                      enc->width, enc->height);
+			/* NARFLEX: We don't want DAR/PAR in the output string
             if (enc->sample_aspect_ratio.num) {
                 av_reduce(&display_aspect_ratio.num, &display_aspect_ratio.den,
                           enc->width*enc->sample_aspect_ratio.num,
@@ -889,14 +890,25 @@ void avcodec_string(char *buf, int buf_size, AVCodecContext *enc, int encode)
                          " [PAR %d:%d DAR %d:%d]",
                          enc->sample_aspect_ratio.num, enc->sample_aspect_ratio.den,
                          display_aspect_ratio.num, display_aspect_ratio.den);
-            }
+            }*/
             if(av_log_get_level() >= AV_LOG_DEBUG){
                 int g= av_gcd(enc->time_base.num, enc->time_base.den);
+				int laced = 0;
+				if (enc->codec_id == CODEC_ID_H264 /*&& enc->interlaced*/)
+					laced = 1; // STV: for some reason H.264 reports 2x frame rate (field rate)
                 snprintf(buf + strlen(buf), buf_size - strlen(buf),
                      ", %d/%d",
-                     enc->time_base.num/g, enc->time_base.den/g);
+					 enc->time_base.num/g, (laced) ? (enc->time_base.den/g) / 2 : enc->time_base.den/g);
             }
+			if (enc->sample_aspect_ratio.num && enc->sample_aspect_ratio.den) {
+				int g = av_gcd(enc->sample_aspect_ratio.num * enc->width, enc->sample_aspect_ratio.den * enc->height);
+				snprintf(buf + strlen(buf), buf_size - strlen(buf),
+					", AR: %d:%d", 
+					(enc->sample_aspect_ratio.num * enc->width)/g, (enc->sample_aspect_ratio.den * enc->height)/g);
+			}
         }
+		snprintf(buf + strlen(buf), buf_size - strlen(buf),
+			(enc->interlaced) ? ", interlaced" : ", progressive");
         if (encode) {
             snprintf(buf + strlen(buf), buf_size - strlen(buf),
                      ", q=%d-%d", enc->qmin, enc->qmax);

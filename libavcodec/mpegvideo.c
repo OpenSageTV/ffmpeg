@@ -964,6 +964,7 @@ int MPV_frame_start(MpegEncContext *s, AVCodecContext *avctx)
         s->current_picture_ptr= pic;
         s->current_picture_ptr->top_field_first= s->top_field_first; //FIXME use only the vars from current_pic
         s->current_picture_ptr->interlaced_frame= !s->progressive_frame && !s->progressive_sequence;
+        avctx->interlaced = s->current_picture_ptr->interlaced_frame;
     }
 
     s->current_picture_ptr->pict_type= s->pict_type;
@@ -1021,6 +1022,33 @@ int MPV_frame_start(MpegEncContext *s, AVCodecContext *avctx)
 
     s->hurry_up= s->avctx->hurry_up;
     s->error_recognition= avctx->error_recognition;
+
+	/* Update the MPEG encoding bitrate in case it's being dynamically adjusted */
+	if (s->encoding && s->bit_rate != avctx->bit_rate)
+	{
+		// Not sure if we want to set the max rate now or along w/ the bitrate
+		if (s->current_picture_ptr->key_frame)
+		{
+			int old_rate = avctx->bit_rate;
+			// Scale the initial complexity to match the new bitrate
+	//		avctx->rc_initial_cplx = avctx->rc_initial_cplx * avctx->bit_rate / s->bit_rate;
+			avctx->rc_max_rate = avctx->bit_rate;
+			s->bit_rate = avctx->bit_rate;
+#ifndef EM8622
+	 	    if(ff_rate_control_init(s, old_rate) < 0)
+#endif
+			        return -1;
+		}
+/*		else if (avctx->bit_rate > 4*s->bit_rate/3) // More than 33% increases in bitrate can handle a new keyframe on the bitrate increase
+		{
+			s->pict_type = I_TYPE;
+			// Scale the initial complexity to match the new bitrate
+			avctx->rc_initial_cplx = avctx->rc_initial_cplx * avctx->bit_rate / s->bit_rate;
+			s->bit_rate = avctx->bit_rate;
+		    if(ff_rate_control_init(s, 1) < 0)
+		        return -1;
+		}*/
+	}
 
     /* set dequantizer, we can't do it during init as it might change for mpeg4
        and we can't do it in the header decode as init is not called for mpeg4 there yet */

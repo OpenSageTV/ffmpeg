@@ -1267,6 +1267,7 @@ static int dca_decode_frame(AVCodecContext * avctx,
     int16_t *samples = data;
     DCAContext *s = avctx->priv_data;
     int channels;
+	uint32_t mrk=0;
 
 
     s->xch_present = 0;
@@ -1285,6 +1286,8 @@ static int dca_decode_frame(AVCodecContext * avctx,
     //set AVCodec values with parsed data
     avctx->sample_rate = s->sample_rate;
     avctx->bit_rate = s->bit_rate;
+    // JFT, so we only look at 1 frame when looking for DTS-HD/DTS-MA
+    avctx->frame_size = s->sample_blocks*32;
 
     for (i = 0; i < (s->sample_blocks / 8); i++) {
         dca_decode_block(s, 0, i);
@@ -1337,6 +1340,10 @@ static int dca_decode_frame(AVCodecContext * avctx,
             av_log(avctx, AV_LOG_DEBUG, "FSIZE96 = %d bytes\n", get_bits(&s->gb, 12)+1);
             av_log(avctx, AV_LOG_DEBUG, "REVNO = %d\n", get_bits(&s->gb, 4));
             break;
+
+		case DCA_HD_MARKER:
+	        avctx->codec_id=CODEC_ID_DTS_MA;
+			break;
         }
 
         skip_bits_long(&s->gb, (-get_bits_count(&s->gb)) & 31);
@@ -1480,4 +1487,26 @@ AVCodec dca_decoder = {
     .decode = dca_decode_frame,
     .close = dca_decode_end,
     .long_name = NULL_IF_CONFIG_SMALL("DCA (DTS Coherent Acoustics)"),
+};
+
+AVCodec dts_hd_decoder = {
+	.name = "dts_hd",
+	.type = CODEC_TYPE_AUDIO,
+	.id = CODEC_ID_DTS_HD,
+	.priv_data_size = sizeof(DCAContext),
+	.init = dca_decode_init,
+	.decode = dca_decode_frame,
+	.close = dca_decode_end,
+	.long_name = NULL_IF_CONFIG_SMALL("DTS-HD"),
+};
+
+AVCodec dts_ma_decoder = {
+	.name = "dts_ma",
+	.type = CODEC_TYPE_AUDIO,
+	.id = CODEC_ID_DTS_MA,
+	.priv_data_size = sizeof(DCAContext),
+	.init = dca_decode_init,
+	.decode = dca_decode_frame,
+	.close = dca_decode_end,
+	.long_name = NULL_IF_CONFIG_SMALL("DTS-MA"),
 };

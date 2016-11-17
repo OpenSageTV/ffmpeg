@@ -110,6 +110,10 @@ const ff_asf_guid ff_asf_marker_header = {
         0x01, 0xCD, 0x87, 0xF4, 0x51, 0xA9, 0xCF, 0x11, 0x8E, 0xE6, 0x00, 0xC0, 0x0C, 0x20, 0x53, 0x65
 };
 
+const ff_asf_guid ff_asf_content_encryption_object = {
+        0xfb, 0xb3, 0x11, 0x22, 0x23, 0xbd, 0xd2, 0x11, 0xb4, 0xb7, 0x00, 0xa0, 0xc9, 0x55, 0xfc, 0x6e
+};
+
 /* I am not a number !!! This GUID is the one found on the PC used to
    generate the stream */
 const ff_asf_guid ff_asf_my_guid = {
@@ -134,6 +138,8 @@ const ff_asf_guid ff_asf_digital_signature = {
 
 /* List of official tags at http://msdn.microsoft.com/en-us/library/dd743066(VS.85).aspx */
 const AVMetadataConv ff_asf_metadata_conv[] = {
+#if 0
+	// DrD: we want the ASF names here...
     { "WM/AlbumArtist"     , "album_artist"},
     { "WM/AlbumTitle"      , "album"       },
     { "Author"             , "artist"      },
@@ -150,6 +156,7 @@ const AVMetadataConv ff_asf_metadata_conv[] = {
     { "WM/TrackNumber"     , "track"       },
     { "WM/Track"           , "track"       },
 //  { "Year"               , "date"        }, TODO: conversion year<->date
+#endif
     { 0 }
 };
 

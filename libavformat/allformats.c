@@ -234,4 +234,5 @@ void av_register_all(void)
     REGISTER_PROTOCOL (TCP, tcp);
     REGISTER_PROTOCOL (UDP, udp);
     REGISTER_PROTOCOL (CONCAT, concat);
+    REGISTER_PROTOCOL (STV, stv);
 }

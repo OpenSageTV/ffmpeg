@@ -190,7 +190,6 @@ int av_audio_convert(AVAudioConvert *ctx,
                      const void * const  in[6], const int  in_stride[6], int len)
 {
     int ch;
-
     //FIXME optimize common cases
 
     for(ch=0; ch<ctx->out_channels; ch++){

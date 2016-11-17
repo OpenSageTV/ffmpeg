@@ -288,6 +288,7 @@ enum CodecID {
     CODEC_ID_MP2= 0x15000,
     CODEC_ID_MP3, ///< preferred ID for decoding MPEG audio layer 1, 2 or 3
     CODEC_ID_AAC,
+    CODEC_ID_AAC_LATM,
     CODEC_ID_AC3,
     CODEC_ID_DTS,
     CODEC_ID_VORBIS,
@@ -338,6 +339,10 @@ enum CodecID {
     CODEC_ID_BINKAUDIO_RDFT,
     CODEC_ID_BINKAUDIO_DCT,
 
+	/* STV: HD audio codecs for detection purposes (not fully decoded) */
+	CODEC_ID_DTS_HD,
+	CODEC_ID_DTS_MA,
+	
     /* subtitle codecs */
     CODEC_ID_DVD_SUBTITLE= 0x17000,
     CODEC_ID_DVB_SUBTITLE,
@@ -1024,6 +1029,17 @@ typedef struct AVPacket {
 #endif
 
 /**
+ * Normally, parsed container frames contain a complete video frame.
+ * However, for some formats (e.g., H.264), it is possible that a frame
+ * contains only a field. As fields have just half the duration of normal
+ * frame, frame rate detection would detect 2*fps instead of fps.
+ * By setting this field, frame rate detection will detect correct fps.
+ *
+ * Default 0, set to 1 by parser, if a frame containing single field detected.
+ */
+#define PKT_FLAG_FIELD 0x0002
+
+ /**
  * Audio Video Frame.
  * New fields can be added to the end of FF_COMMON_FRAME with minor version
  * bumps.
@@ -2291,6 +2307,13 @@ typedef struct AVCodecContext {
      */
     int bidir_refine;
 
+    /**
+	 * If it's a video stream, this is 1 if its interlaced. This is actually a per-frame
+	 * condition, but we want it for streams quite often and this is the only way to handle
+	 * the deallocation of the frame data.
+	 */
+	int interlaced;
+	
     /**
      *
      * - encoding: Set by user.
@@ -3808,6 +3831,17 @@ typedef struct AVCodecParserContext {
      * Previous frame byte position.
      */
     int64_t last_pos;
+
+    /**
+     * Normally, parsed container frames contain a complete video frame.
+     * However, for some formats (e.g., H.264), it is possible that a frame
+     * contains only a field. As fields have just half the duration of normal
+     * frame, frame rate detection would detect 2*fps instead of fps.
+     * By setting this field, frame rate detection will detect correct fps.
+     *
+     * Default 0, set to 1 by parser, if a frame containing single field detected.
+     */
+    int field_frame_flag;
 } AVCodecParserContext;
 
 typedef struct AVCodecParser {

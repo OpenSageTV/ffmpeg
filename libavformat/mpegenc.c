@@ -1181,7 +1181,8 @@ static int mpeg_mux_write_packet(AVFormatContext *ctx, AVPacket *pkt)
         return -1;
 
     if (s->is_dvd){
-        if (is_iframe && (s->packet_number == 0 || (pts - stream->vobu_start_pts >= 36000))) { // min VOBU length 0.4 seconds (mpucoder)
+		// NARFLEX: SageTV, force I frame alignment if we're doing IFrame only mode since the PPC MPEG2 decoder requires that for parsing timestamps
+		if ((st->codec->codec_type == AVMEDIA_TYPE_VIDEO && st->codec->gop_size == 0) || (is_iframe && (s->packet_number == 0 || (pts - stream->vobu_start_pts >= 36000)))) { // min VOBU length 0.4 seconds (mpucoder)
             stream->bytes_to_iframe = av_fifo_size(stream->fifo);
             stream->align_iframe = 1;
             stream->vobu_start_pts = pts;

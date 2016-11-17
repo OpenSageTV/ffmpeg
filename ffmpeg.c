@@ -56,6 +56,11 @@
 #include <sys/resource.h>
 #elif HAVE_GETPROCESSTIMES
 #include <windows.h>
+#define	SIGHUP	1	/* hangup */
+#define	SIGQUIT	3	/* quit */
+#define	SIGKILL	9	/* kill (cannot be caught or ignored) */
+#define	SIGBUS	10	/* bus error */
+#define	SIGPIPE	13	/* broken pipe */
 #endif
 #if HAVE_GETPROCESSMEMORYINFO
 #include <windows.h>
@@ -197,7 +202,13 @@ static int audio_sync_method= 0;
 static float audio_drift_threshold= 0.1;
 static int copy_ts= 0;
 static int opt_shortest = 0;
+static int active_file = 0;
 static int video_global_header = 0;
+static int stdin_ctrl = 0;
+static int dump_metadata = 0;
+static int min_pix_energy = 0;
+static int min_pix_var = 0;
+static int min_pix_frames_left = 0;
 static char *vstats_filename;
 static FILE *vstats_file;
 static int opt_programid = 0;
@@ -223,6 +234,7 @@ static int nb_frames_drop = 0;
 static int input_sync;
 static uint64_t limit_filesize = 0;
 static int force_fps = 0;
+static int force_interlaced = -1;
 
 static int pgmyuv_compatibility_hack=0;
 static float dts_delta_threshold = 10;
@@ -241,6 +253,8 @@ static AVBitStreamFilterContext *video_bitstream_filters=NULL;
 static AVBitStreamFilterContext *audio_bitstream_filters=NULL;
 static AVBitStreamFilterContext *subtitle_bitstream_filters=NULL;
 static AVBitStreamFilterContext *bitstream_filters[MAX_FILES][MAX_STREAMS];
+
+extern int bug_broken_dts;
 
 #define DEFAULT_PASS_LOGFILENAME_PREFIX "ffmpeg2pass"
 
@@ -322,6 +336,12 @@ typedef struct AVInputFile {
     int buffer_size;      /* current total buffer size */
     int nb_streams;       /* nb streams we are aware of */
 } AVInputFile;
+
+static int calc_pixel_stats(AVOutputStream *ist, AVFrame *picture, int* average, int* variance);
+
+#define CMD_READ_BUF_SIZE 64
+static int cmdReadBufPos = 0;
+static char cmdReadBuf[CMD_READ_BUF_SIZE];
 
 #if HAVE_TERMIOS_H
 
@@ -536,19 +556,20 @@ static void term_init(void)
 
     tcsetattr (0, TCSANOW, &tty);
     signal(SIGQUIT, sigterm_handler); /* Quit (POSIX).  */
-#endif
+//#endif
 
     signal(SIGINT , sigterm_handler); /* Interrupt (ANSI).  */
     signal(SIGTERM, sigterm_handler); /* Termination (ANSI).  */
 #ifdef SIGXCPU
     signal(SIGXCPU, sigterm_handler);
 #endif
+#endif
 }
 
 /* read a key without blocking */
+#if HAVE_TERMIOS_H
 static int read_key(void)
 {
-#if HAVE_TERMIOS_H
     int n = 1;
     unsigned char ch;
     struct timeval tv;
@@ -560,19 +581,200 @@ static int read_key(void)
     tv.tv_usec = 0;
     n = select(1, &rfds, NULL, NULL, &tv);
     if (n > 0) {
+		if (stdin_ctrl)
+		{
+			int readcount=0;
+			if(cmdReadBufPos >= CMD_READ_BUF_SIZE)
+			{
+				memset(cmdReadBuf,0,CMD_READ_BUF_SIZE);
+				cmdReadBufPos = 0; // reset buffer if we fill it
+			}
+			if((readcount=read(0, &cmdReadBuf[cmdReadBufPos], CMD_READ_BUF_SIZE - cmdReadBufPos))==-1)
+				return -1;
+			cmdReadBufPos += readcount;
+			while (1)
+			{
+				char *eolPos,*eolPos2;
+				int currCmdLen;
+				cmdReadBuf[ (CMD_READ_BUF_SIZE - 1) > cmdReadBufPos ? 
+				cmdReadBufPos : (CMD_READ_BUF_SIZE - 1) ] = 0;
+				eolPos = strchr(cmdReadBuf, '\n');
+				eolPos2 = strchr(cmdReadBuf, '\r');
+				if (!eolPos && !eolPos2)
+					return -1;
+				if(eolPos==0) eolPos=eolPos2;
+				// We've got a command in the buffer, see what it is and deal with it
+				if (strstr(cmdReadBuf, "inactivefile") == cmdReadBuf)
+				{
+					if (active_file)
+					{
+						int i;
+						active_file = 0;
+						// Inactive file command received, update us accordingly.
+						for (i = 0; i < nb_input_files; i++)
+						{
+							URLContext *uc = input_files[i]->pb->opaque;
+							uc->flags&=~URL_ACTIVEFILE;
+						}
+						fprintf(stderr, "Inactive file message has been processed\n");
+					}
+				}
+				else if (strstr(cmdReadBuf, "videorateadapt") == cmdReadBuf)
+				{
+					// Parse the amount we want to adjust the video bitrate by
+					int videoRateAdjust = atoi(cmdReadBuf + strlen("videorateadapt") + 1) * 1000;
+					//fprintf(stderr, "Got video rate adjustment of %d\n", videoRateAdjust);
+					int i, j;
+					for(i=0;i<nb_output_files;i++)
+					{
+						AVFormatContext *avctx = output_files[i];
+						for (j = 0; j < avctx->nb_streams; j++)
+						{
+							AVStream *st = avctx->streams[j];
+							if(st->codec->codec_type == CODEC_TYPE_VIDEO)
+							st->codec->bit_rate = st->codec->bit_rate + videoRateAdjust;
+						}
+					}
+				}
+				*eolPos = 0;
+				currCmdLen = strlen(cmdReadBuf) + 1;
+				if (currCmdLen < cmdReadBufPos)
+				{
+					strcpy(cmdReadBuf, eolPos + 1);
+					cmdReadBufPos -= currCmdLen;
+					memset(&cmdReadBuf[cmdReadBufPos],0,CMD_READ_BUF_SIZE-cmdReadBufPos);
+				}
+				else
+				{
+					cmdReadBufPos = 0;
+					memset(cmdReadBuf,0,CMD_READ_BUF_SIZE);
+				}
+			}
+			return -1;
+		}
+		else
+		{
         n = read(0, &ch, 1);
         if (n == 1)
             return ch;
 
         return n;
     }
-#elif HAVE_CONIO_H
-    if(kbhit())
-        return(getch());
-#endif
+//#elif HAVE_CONIO_H
+//    if(kbhit())
+//        return(getch());
+	}
     return -1;
 }
 
+#else
+struct {
+	char* name;
+	int prio;
+} priority_presets_defs[] = {
+	{ "realtime", REALTIME_PRIORITY_CLASS},
+	{ "high", HIGH_PRIORITY_CLASS},
+#ifdef ABOVE_NORMAL_PRIORITY_CLASS
+	{ "abovenormal", ABOVE_NORMAL_PRIORITY_CLASS},
+#endif
+	{ "normal", NORMAL_PRIORITY_CLASS},
+#ifdef BELOW_NORMAL_PRIORITY_CLASS
+	{ "belownormal", BELOW_NORMAL_PRIORITY_CLASS},
+#endif
+	{ "idle", IDLE_PRIORITY_CLASS},
+	{ NULL, NORMAL_PRIORITY_CLASS} /* default */
+};
+	
+static int read_key(void)
+{
+	unsigned char ch;
+	DWORD retval;
+	char* eolPos;
+	int i,j;
+	int videoRateAdjust;
+	int currCmdLen;
+	
+	HANDLE mystdin = GetStdHandle(STD_INPUT_HANDLE);
+	
+	if(!PeekNamedPipe(mystdin, NULL, 1, &retval, NULL, NULL) || !retval){
+		return -1;
+	}
+
+	if (stdin_ctrl)
+	{
+		if (cmdReadBufPos >= CMD_READ_BUF_SIZE)
+		{
+			memset(cmdReadBuf,0,CMD_READ_BUF_SIZE);
+			cmdReadBufPos = 0; // reset buffer if we fill it
+		}
+		if (!ReadFile(mystdin, &(cmdReadBuf[cmdReadBufPos]), CMD_READ_BUF_SIZE - cmdReadBufPos, &retval, NULL))
+    return -1;
+		cmdReadBufPos += retval;
+		while (1)
+		{
+			cmdReadBuf[min(CMD_READ_BUF_SIZE - 1, cmdReadBufPos)] = 0;
+			eolPos = strchr(cmdReadBuf, '\n');
+			if (!eolPos)
+				return -1;
+			// We've got a command in the buffer, see what it is and deal with it
+			if (strstr(cmdReadBuf, "inactivefile") == cmdReadBuf)
+			{
+				if (active_file)
+				{
+					active_file = 0;
+					// Inactive file command received, update us accordingly.
+					for (i = 0; i < nb_input_files; i++)
+					{
+						URLContext *uc = input_files[i]->pb->opaque;
+						uc->flags&=~URL_ACTIVEFILE;
+					}
+					fprintf(stderr, "Inactive file message has been processed\n");
+				}
+			}
+			else if (strstr(cmdReadBuf, "videorateadapt") == cmdReadBuf)
+			{
+				// Parse the amount we want to adjust the video bitrate by
+				videoRateAdjust = atoi(cmdReadBuf + strlen("videorateadapt") + 1) * 1000;
+				//fprintf(stderr, "Got video rate adjustment of %d\n", videoRateAdjust);
+				for(i=0;i<nb_output_files;i++)
+				{
+					AVFormatContext *avctx = output_files[i];
+					for (j = 0; j < avctx->nb_streams; j++)
+					{
+						AVStream *st = avctx->streams[j];
+						if(st->codec->codec_type == CODEC_TYPE_VIDEO)
+						st->codec->bit_rate = st->codec->bit_rate + videoRateAdjust;
+					}
+				}
+			}
+			*eolPos = 0;
+			currCmdLen = strlen(cmdReadBuf) + 1;
+			if (currCmdLen < cmdReadBufPos)
+			{
+				strcpy(cmdReadBuf, eolPos + 1);
+				cmdReadBufPos -= currCmdLen;
+				memset(&cmdReadBuf[cmdReadBufPos],0,CMD_READ_BUF_SIZE-cmdReadBufPos);
+			}
+			else
+			{
+				cmdReadBufPos = 0;
+				memset(cmdReadBuf,0,CMD_READ_BUF_SIZE);
+			}
+		}
+		return -1;
+	}
+	else
+	{
+		if (ReadFile(mystdin, &ch, 1, &retval, NULL) && retval)
+			return ch;
+		else
+			return -1;
+	}
+}
+
+#endif
+
+// DrD: leave this in since it's used if FFMPEG detects if stdin is a TTY
 static int decode_interrupt_cb(void)
 {
     return q_pressed || (q_pressed = read_key() == 'q');
@@ -693,6 +895,55 @@ static void choose_pixel_fmt(AVStream *st, AVCodec *codec)
                     || st->codec->pix_fmt == PIX_FMT_YUV422P)))
             st->codec->pix_fmt = codec->pix_fmts[0];
     }
+}
+
+// returns NULL if the given filename should be used
+static char *indirect_filename_buffer = NULL;
+static char *get_real_filename(const char *filename)
+{
+	int ii;
+	const char *ext;
+	
+	if(!filename) return NULL;
+	if(!strlen(filename)) return NULL;
+	
+	ext = filename + strlen(filename) - 1;
+	
+	for(ii = strlen(filename) - 1; ii > 0; ii--) {
+		if(filename[ii] == '.') {
+			ext = &filename[ii]+1; // skip the dot
+			break;
+		}
+	}
+	
+	if(!strcmp(ext,"txt")) { // FIXME: should use .url instead?
+		FILE *fnf;
+		size_t count;
+		
+		if(!indirect_filename_buffer) {
+			indirect_filename_buffer = (char*)av_malloc(PATH_MAX);
+			if(!indirect_filename_buffer)
+				return NULL;
+		}
+		
+		fnf = fopen(filename, "r");
+		if(!fnf) {
+			av_log(NULL, AV_LOG_ERROR, "Unable to open \"%s\" for reading.\n", filename);
+			return NULL;
+		}
+		
+		count = fread(indirect_filename_buffer, 1, PATH_MAX, fnf);
+		fclose(fnf);
+		if(count <= 0) {
+			av_log(NULL, AV_LOG_ERROR, "Error reading filename from intermediate file.\n");
+			return NULL;
+		} else {
+			indirect_filename_buffer[count] = '\0'; // make sure it's NULL terminated
+			return indirect_filename_buffer;
+		}
+	}
+	
+	return NULL;
 }
 
 static int read_ffserver_streams(AVFormatContext *s, const char *filename)
@@ -1050,6 +1301,102 @@ static void pre_process_video_frame(AVInputStream *ist, AVPicture *picture, void
     *bufp = buf;
 }
 
+// return 0 on success, anything else on failure
+static int calc_pixel_stats(AVOutputStream *ost, AVFrame *picture, int* average, int* variance)
+{
+	// To get the energy we use the luminace value of each pixel. If it's YUV, that's easy. If it's RGB then we average the 3 components together.
+	int yuvspace = 0;
+	int ychannel = 0;
+	int packed = 0;
+	int pixbytes = 0;
+	enum PixelFormat pixFmt = ost->st->codec->pix_fmt;
+	int width = ost->st->codec->width;
+	int height = ost->st->codec->height;
+	switch (pixFmt)
+	{
+		case PIX_FMT_YUV420P:
+		case PIX_FMT_YUV422P:
+		case PIX_FMT_YUV444P:
+		case PIX_FMT_YUV410P:
+		case PIX_FMT_YUV411P:
+		case PIX_FMT_YUVJ420P:
+		case PIX_FMT_YUVJ422P:
+		case PIX_FMT_YUVJ444P:
+			yuvspace = 1;
+			ychannel = 0;
+			packed = 0;
+			pixbytes = 1;
+			break;
+		case PIX_FMT_YUYV422:
+			yuvspace = 1;
+			ychannel = 0;
+			packed = 1;
+			pixbytes = 2;
+			break;
+		case PIX_FMT_UYVY422:
+			yuvspace = 1;
+			ychannel = 1;
+			packed = 1;
+			pixbytes = 2;
+			break;
+		case PIX_FMT_BGR24:
+		case PIX_FMT_RGB24:
+			yuvspace = 0;
+			packed = 1;
+			pixbytes = 3;
+			break;
+		case PIX_FMT_RGB32:
+		case PIX_FMT_BGR32:
+			yuvspace = 0;
+			packed = 1;
+			pixbytes = 4;
+			break;
+		default:
+            av_log(NULL, AV_LOG_ERROR, "Unsupported colorspace for image energy calculations\n");
+			return 1; // we don't deal with this colorspace
+	}
+	if (yuvspace)
+	{
+		if (packed)
+		{
+            av_log(NULL, AV_LOG_ERROR, "TEMP: Unsupported colorspace for image energy calculations\n");
+			return 1; // we don't deal with this colorspace
+		}
+		else
+		{
+			int avgEnergy,avgVariance;
+			double totalEnergy = 0;
+			double totalVariance = 0;
+			uint8_t* currData = picture->data[ychannel];
+			int y = 0, x = 0;
+			for (y = 0; y < height; y++, currData += picture->linesize[ychannel])
+			{
+				for (x = 0; x < width; x++)
+				{
+					int currVal = currData[x*pixbytes];
+					totalEnergy += currVal;
+					totalVariance += currVal*currVal;
+				}
+			}
+			avgEnergy = (int)(totalEnergy/(width*height));
+			//av_log(NULL, AV_LOG_INFO, "Pixel average value is %d\n", avgEnergy);
+			avgVariance = (int)(totalVariance/(width*height) - avgEnergy*avgEnergy);
+			//av_log(NULL, AV_LOG_INFO, "Pixel variance value is %d\n", avgVariance);
+			if (average)
+				*average = avgEnergy;
+			if (variance)
+				*variance = avgVariance;
+			return 0;
+
+		}
+	}
+	else
+	{
+        av_log(NULL, AV_LOG_ERROR, "TEMP: Unsupported colorspace for image energy calculations\n");
+		return 1; // we don't deal with this colorspace
+	}
+}
+
 /* we begin to correct av delay at this threshold */
 #define AV_DELAY_MAX 0.100
 
@@ -1159,7 +1506,8 @@ static void do_video_out(AVFormatContext *s,
             ost->sync_opts= lrintf(sync_ipts);
         }else if (vdelta > 1.1)
             nb_frames = lrintf(vdelta);
-//fprintf(stderr, "vdelta:%f, ost->sync_opts:%"PRId64", ost->sync_ipts:%f nb_frames:%d\n", vdelta, ost->sync_opts, get_sync_ipts(ost), nb_frames);
+//fprintf(stderr, "vdelta:%lf (sync_ipts %lld, tb %d:%d), ost->sync_opts:%"PRId64", ost->sync_ipts:%f nb_frames:%d\n",
+//		vdelta, (long long)get_sync_ipts(ost), enc->time_base.num, enc->time_base.den, ost->sync_opts, get_sync_ipts(ost), nb_frames);
         if (nb_frames == 0){
             ++nb_frames_drop;
             if (verbose>2)
@@ -1171,6 +1519,42 @@ static void do_video_out(AVFormatContext *s,
         }
     }else
         ost->sync_opts= lrintf(sync_ipts);
+
+	if (min_pix_energy > 0 || min_pix_var > 0)
+	{
+		// Check this frame for image quality and skip it if it's not good enough (optmized thumbnail generation)
+		static int saw_key_frame = 0; // FIXME: I don't like embedded static vars...
+		int average, variance;
+		
+		//fprintf(stderr, "pic info: type %d, qual %d, keyframe %d, skf %d\n", in_picture->pict_type, in_picture->quality, in_picture->key_frame, saw_key_frame);
+		// pict_type will be zero but key_frame will be one sometimes due to FFMPEG indicating a keyframe incorrectly on the first frame
+		// In that case we need to wait until the next real keyframe is present
+		// We also only take frames on I/P frames, and never on B frames to start 
+		if (!saw_key_frame && in_picture->key_frame && !in_picture->pict_type)
+		{
+			saw_key_frame = 1;
+			return;
+		}
+		if (saw_key_frame == 1 && !in_picture->key_frame)
+			return;
+		if (!saw_key_frame && in_picture->pict_type != FF_I_TYPE && in_picture->pict_type != FF_P_TYPE)
+			return;
+		saw_key_frame = 2;
+		
+		// With avfilters we now have the output picture already scaled/cropped so we need to do the tests against
+		// that image instead of the input image
+		if (!calc_pixel_stats(ost, in_picture, &average, &variance))
+		{
+			//fprintf(stderr, "pixel stats: average %d, variance %d, frames left %d\n", average, variance, min_pix_frames_left);
+			// Calculation succeeded, do the check
+			if ((min_pix_frames_left != 1) && ((min_pix_energy > 0 && average < min_pix_energy) || (min_pix_var > 0 && variance < min_pix_var)))
+			{
+				min_pix_frames_left--;
+				//av_log(NULL, AV_LOG_INFO, "Skipping encoding of video frame due to energy/variance constraints\n");
+				return;
+			}
+		}
+	}
 
     nb_frames= FFMIN(nb_frames, max_frames[AVMEDIA_TYPE_VIDEO] - ost->frame_number);
     if (nb_frames <= 0)
@@ -1280,7 +1664,10 @@ static void do_video_out(AVFormatContext *s,
             big_picture= *final_picture;
             /* better than nothing: use input picture interlaced
                settings */
-            big_picture.interlaced_frame = in_picture->interlaced_frame;
+			if (force_interlaced == -1)
+	            big_picture.interlaced_frame = in_picture->interlaced_frame;
+			else
+				big_picture.interlaced_frame = force_interlaced;
             if(avcodec_opts[AVMEDIA_TYPE_VIDEO]->flags & (CODEC_FLAG_INTERLACED_DCT|CODEC_FLAG_INTERLACED_ME)){
                 if(top_field_first == -1)
                     big_picture.top_field_first = in_picture->top_field_first;
@@ -1303,10 +1690,11 @@ static void do_video_out(AVFormatContext *s,
             ret = avcodec_encode_video(enc,
                                        bit_buffer, bit_buffer_size,
                                        &big_picture);
-            if (ret < 0) {
+// NARFLEX: I disabled this because it can still work even if this happens so there's no reason to bail!
+/*            if (ret < 0) {
                 fprintf(stderr, "Video encoding failed\n");
                 av_exit(1);
-            }
+            }*/
 
             if(ret>0){
                 pkt.data= bit_buffer;
@@ -1425,8 +1813,11 @@ static void print_report(AVFormatContext **output_files,
             float t = (av_gettime()-timer_start) / 1000000.0;
 
             frame_number = ost->frame_number;
-            snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "frame=%5d fps=%3d q=%3.1f ",
-                     frame_number, (t>1)?(int)(frame_number/t+0.5) : 0,
+            snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "frame=%5d%c fps=%3d q=%3.1f ",
+                     frame_number, 
+					 enc->coded_frame->interlaced_frame ?
+					 (enc->coded_frame->top_field_first?'t':'b'):'p',
+					 (t>1)?(int)(frame_number/t+0.5) : 0,
                      !ost->st->stream_copy ?
                      enc->coded_frame->quality/(float)FF_QP2LAMBDA : -1);
             if(is_last_report)
@@ -1515,7 +1906,6 @@ static int output_packet(AVInputStream *ist, int ist_index,
 #if CONFIG_AVFILTER
     int frame_available;
 #endif
-
     AVPacket avpkt;
     int bps = av_get_bits_per_sample_format(ist->st->codec->sample_fmt)>>3;
 
@@ -2469,10 +2859,10 @@ static int av_transcode(AVFormatContext **output_files,
         print_sdp(output_files, nb_output_files);
     }
 
-    if (!using_stdin && verbose >= 0) {
+/*    if (!using_stdin && verbose >= 0) {
         fprintf(stderr, "Press [q] to stop encoding\n");
         url_set_interrupt_cb(decode_interrupt_cb);
-    }
+    } */
     term_init();
 
     timer_start = av_gettime();
@@ -2581,7 +2971,7 @@ static int av_transcode(AVFormatContext **output_files,
                 pkt.dts *= input_files_ts_scale[file_index][pkt.stream_index];
         }
 
-//        fprintf(stderr, "next:%"PRId64" dts:%"PRId64" off:%"PRId64" %d\n", ist->next_pts, pkt.dts, input_files_ts_offset[ist->file_index], ist->st->codec->codec_type);
+//        fprintf(stderr, "next %d:%"PRId64" dts:%"PRId64" off:%"PRId64" %d\n", ist->st->codec->codec_type, ist->next_pts, pkt.dts, input_files_ts_offset[ist->file_index], ist->st->codec->codec_type);
         if (pkt.dts != AV_NOPTS_VALUE && ist->next_pts != AV_NOPTS_VALUE
             && (is->iformat->flags & AVFMT_TS_DISCONT)) {
             int64_t pkt_dts= av_rescale_q(pkt.dts, ist->st->time_base, AV_TIME_BASE_Q);
@@ -2732,6 +3122,7 @@ static int opt_me_threshold(const char *opt, const char *arg)
 static int opt_verbose(const char *opt, const char *arg)
 {
     verbose = parse_number_or_die(opt, arg, OPT_INT64, -10, 10);
+	if (verbose >= 2) av_log_set_level(50);
     return 0;
 }
 
@@ -2895,6 +3286,11 @@ static void opt_qscale(const char *arg)
     }
 }
 
+static void opt_force_interlaced(const char *arg)
+{
+	force_interlaced = atoi(arg);
+}
+
 static void opt_top_field_first(const char *arg)
 {
     top_field_first= atoi(arg);
@@ -3056,6 +3452,19 @@ static int opt_recording_time(const char *opt, const char *arg)
     return 0;
 }
 
+#ifdef __MINGW32__
+static void opt_priority(const char *arg)
+{
+	int i;
+   	for(i=0; priority_presets_defs[i].name; i++)
+	{
+   		if(strcasecmp(priority_presets_defs[i].name, arg) == 0)
+			break;
+	}
+	SetPriorityClass(GetCurrentProcess(), priority_presets_defs[i].prio);
+}
+#endif
+
 static int opt_start_time(const char *opt, const char *arg)
 {
     start_time = parse_time_or_die(opt, arg, 1);
@@ -3115,6 +3524,12 @@ static void opt_input_file(const char *filename)
     AVInputFormat *file_iformat = NULL;
     int err, i, ret, rfps, rfps_base;
     int64_t timestamp;
+	char *real_filename = get_real_filename(filename);
+	
+	if(real_filename) {
+		opt_input_file(real_filename);
+		return;
+	}
 
     if (last_asked_format) {
         if (!(file_iformat = av_find_input_format(last_asked_format))) {
@@ -3197,6 +3612,12 @@ static void opt_input_file(const char *filename)
     }
 
     ic->loop_input = loop_input;
+
+	if (active_file)
+	{
+		URLContext *uc = ic->pb->opaque;
+		uc->flags|=URL_ACTIVEFILE;
+	}
 
     /* If not enough info to get the stream parameters, we decode the
        first frames to get it. (used in mpeg case for example) */
@@ -3296,6 +3717,10 @@ static void opt_input_file(const char *filename)
 
     input_files[nb_input_files] = ic;
     input_files_ts_offset[nb_input_files] = input_ts_offset - (copy_ts ? 0 : timestamp);
+	
+	/* dump metadata */
+	if (dump_metadata)
+		av_metadata_dump(ic);
     /* dump the file content */
     if (verbose >= 0)
         dump_format(ic, nb_input_files, filename, 0);
@@ -3660,6 +4085,12 @@ static void opt_output_file(const char *filename)
     int input_has_video, input_has_audio, input_has_subtitle;
     AVFormatParameters params, *ap = &params;
     AVOutputFormat *file_oformat;
+	char *real_filename = get_real_filename(filename);
+	
+	if(real_filename) {
+		opt_output_file(real_filename);
+		return;
+	}
 
     if (!strcmp(filename, "-"))
         filename = "pipe:";
@@ -4211,6 +4642,16 @@ static const OptionDef options[] = {
     { "copyts", OPT_BOOL | OPT_EXPERT, {(void*)&copy_ts}, "copy timestamps" },
     { "shortest", OPT_BOOL | OPT_EXPERT, {(void*)&opt_shortest}, "finish encoding within shortest input" }, //
     { "dts_delta_threshold", HAS_ARG | OPT_FLOAT | OPT_EXPERT, {(void*)&dts_delta_threshold}, "timestamp discontinuity delta threshold", "threshold" },
+    { "activefile", OPT_BOOL | OPT_EXPERT, {(void*)&active_file}, "active file" },
+    { "stdinctrl", OPT_BOOL | OPT_EXPERT, {(void*)&stdin_ctrl}, "accept control commands through stdin (inactivefile, rateadjust)" },
+	{ "dumpmetadata", OPT_BOOL | OPT_EXPERT, {(void*)&dump_metadata}, "dump metadata information to stderr" },
+	{ "minpixenergy", HAS_ARG | OPT_INT, {(void*)&min_pix_energy}, "min pixel energy for thumb", "" },
+	{ "minpixvar", HAS_ARG | OPT_INT, {(void*)&min_pix_var}, "min pixel variance for thumb", "" },
+	{ "minpixnumframes", HAS_ARG | OPT_INT, {(void*)&min_pix_frames_left}, "max num frames to check for min pix req.", "" },
+	{ "brokendts", OPT_BOOL | OPT_EXPERT, {(void*)&bug_broken_dts}, "Ignores DTS values in some streams that are broken" },
+#ifdef __MINGW32__
+	{ "priority", HAS_ARG, {(void*)opt_priority}, "set process priority (Win32)", "priority" },
+#endif
     { "programid", HAS_ARG | OPT_INT | OPT_EXPERT, {(void*)&opt_programid}, "desired program number", "" },
     { "xerror", OPT_BOOL, {(void*)&exit_on_error}, "exit on error", "error" },
     { "copyinkf", OPT_BOOL | OPT_EXPERT, {(void*)&copy_initial_nonkeyframes}, "copy initial non-keyframes" },
@@ -4253,6 +4694,7 @@ static const OptionDef options[] = {
 #endif
     { "intra_matrix", HAS_ARG | OPT_EXPERT | OPT_VIDEO, {(void*)opt_intra_matrix}, "specify intra matrix coeffs", "matrix" },
     { "inter_matrix", HAS_ARG | OPT_EXPERT | OPT_VIDEO, {(void*)opt_inter_matrix}, "specify inter matrix coeffs", "matrix" },
+	{ "interlace", HAS_ARG | OPT_EXPERT | OPT_VIDEO, {(void*)opt_force_interlaced}, "progressive=0/interlaced=1/auto=-1", "" },
     { "top", HAS_ARG | OPT_EXPERT | OPT_VIDEO, {(void*)opt_top_field_first}, "top=1/bottom=0/auto=-1 field first", "" },
     { "dc", OPT_INT | HAS_ARG | OPT_EXPERT | OPT_VIDEO, {(void*)&intra_dc_precision}, "intra_dc_precision", "precision" },
     { "vtag", HAS_ARG | OPT_EXPERT | OPT_VIDEO, {(void*)opt_video_tag}, "force video tag/fourcc", "fourcc/tag" },
@@ -4305,11 +4747,51 @@ static const OptionDef options[] = {
     { NULL, },
 };
 
+static void exit_sighandler(int x){
+    static int sig_count=0;
+    ++sig_count;
+    if(sig_count==5)
+    {
+        /* We're crashing bad and can't uninit cleanly :( 
+         * by popular request, we make one last (dirty) 
+         * effort to restore the user's 
+         * terminal. */
+//      getch2_disable();
+        exit(1);
+    }
+    if(sig_count==6) exit(1);
+    if(sig_count>6){
+        // can't stop :(
+#ifndef __MINGW32__
+        kill(getpid(),SIGKILL);
+#endif
+    }
+    av_log(NULL, AV_LOG_ERROR, "FFMPEG has crashed with signal %d !!!\n", x);
+    exit(1);
+}
+
 int main(int argc, char **argv)
 {
     int i;
     int64_t ti;
 
+    //========= Catch terminate signals: ================
+    // terminate requests:
+    signal(SIGTERM,exit_sighandler); // kill
+    signal(SIGHUP,exit_sighandler);  // kill -HUP  /  xterm closed
+    
+    signal(SIGINT,exit_sighandler);  // Interrupt from keyboard
+    
+    signal(SIGQUIT,exit_sighandler); // Quit from keyboard
+    signal(SIGPIPE,exit_sighandler); // Some window managers cause this
+    
+    // fatal errors:
+    signal(SIGBUS,exit_sighandler);  // bus error
+    signal(SIGSEGV,exit_sighandler); // segfault
+    signal(SIGILL,exit_sighandler);  // illegal instruction
+    signal(SIGFPE,exit_sighandler);  // floating point exc.
+    signal(SIGABRT,exit_sighandler); // abort()
+ 
     avcodec_register_all();
 #if CONFIG_AVDEVICE
     avdevice_register_all();

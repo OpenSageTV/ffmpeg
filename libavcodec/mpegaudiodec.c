@@ -313,11 +313,13 @@ static int int_pow(int i, int *exp_ptr)
 }
 #endif
 
+
 static av_cold int decode_init(AVCodecContext * avctx)
 {
     MPADecodeContext *s = avctx->priv_data;
     static int init=0;
     int i, j, k;
+
 
     s->avctx = avctx;
     s->apply_window_mp3 = apply_window_mp3_c;

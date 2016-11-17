@@ -117,8 +117,10 @@ ff_vorbis_comment(AVFormatContext * as, AVMetadata **m, const uint8_t *buf, int 
                 continue;
             }
 
-            for (j = 0; j < tl; j++)
-                tt[j] = toupper(t[j]);
+			// DrD: Don't convert to uppercase...
+//            for (j = 0; j < tl; j++)
+//                tt[j] = toupper(t[j]);
+			memcpy(tt, t, tl);
             tt[tl] = 0;
 
             memcpy(ct, v, vl);

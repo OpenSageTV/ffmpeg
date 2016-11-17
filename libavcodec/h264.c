@@ -2751,6 +2751,7 @@ static int decode_nal_units(H264Context *h, const uint8_t *buf, int buf_size){
         av_log(NULL, AV_LOG_ERROR,"%02X ", buf[i]);
     }
 #endif
+	
     if(!(s->flags2 & CODEC_FLAG2_CHUNKS)){
         h->current_slice = 0;
         if (!s->first_field)
@@ -3026,7 +3027,6 @@ static int decode_frame(AVCodecContext *avctx,
         } else {
             cur->interlaced_frame = 0;
             cur->repeat_pict = 0;
-
             /* Signal interlacing information externally. */
             /* Prioritize picture timing SEI information over used decoding process if it exists. */
 

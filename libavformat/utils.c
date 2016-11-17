@@ -34,6 +34,11 @@
 #include "network.h"
 #endif
 
+#if defined(__MINGW32__)
+#include <sys/types.h>
+#include <sys/timeb.h>
+#endif
+
 #undef NDEBUG
 #include <assert.h>
 
@@ -334,6 +339,33 @@ int av_get_packet(ByteIOContext *s, AVPacket *pkt, int size)
     return ret;
 }
 
+int av_get_packet_nobuf(ByteIOContext *s, AVPacket *pkt, int size, int64_t pos)
+{
+    int buffer_size;
+    int ret= av_new_packet(pkt, size);
+
+    if(ret<0)
+        return ret;
+
+    buffer_size=s->buffer_size;
+    s->buffer_size=0; // Temporarily so it won't fill the buffer
+
+    pkt->pos= pos;
+
+    s->buf_ptr = s->buffer;
+    s->buf_end = s->buffer;
+    url_fseek(s, pos, SEEK_SET);
+
+    ret= get_buffer(s, pkt->data, size);
+    if(ret<=0)
+        av_free_packet(pkt);
+    else
+        pkt->size= ret;
+
+    s->buffer_size=buffer_size;
+
+    return ret;
+}
 
 int av_filename_number_test(const char *filename)
 {
@@ -639,6 +671,7 @@ static AVPacket *add_to_pktbuf(AVPacketList **packet_buffer, AVPacket *pkt,
 
 int av_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
+    int packetbufsize=0;
     int ret, i;
     AVStream *st;
 
@@ -702,11 +735,31 @@ int av_read_packet(AVFormatContext *s, AVPacket *pkt)
 
             if(av_log2(pd->buf_size) != av_log2(pd->buf_size - pkt->size)){
                 //FIXME we dont reduce score to 0 for the case of running out of buffer space in bytes
-                set_codec_from_probe_data(s, st, pd, st->probe_packets > 0 ? AVPROBE_SCORE_MAX/4 : 0);
+				// NARFLEX - audio in DVR-MS files will fail if we don't subtract 1 since it gets a score of 25
+				// MP2 audio can be fixed by removing our probe limit stuff below, but AC3 needs the required score reduced
+                set_codec_from_probe_data(s, st, pd, st->probe_packets > 0 ? ((AVPROBE_SCORE_MAX/4) - 1) : 0);
                 if(st->codec->codec_id != CODEC_ID_PROBE){
                     pd->buf_size=0;
                     av_freep(&pd->buf);
                     av_log(s, AV_LOG_DEBUG, "probed stream %d\n", st->index);
+                } else {
+					// bail if the probe size gets too big
+					// do this after we probe in case something causes us to overrun our limit before we have a chance
+					AVPacketList *pktlist1=s->raw_packet_buffer;
+					while(pktlist1)
+					{
+						packetbufsize+=pktlist1->pkt.size;
+						pktlist1=pktlist1->next;
+					}
+					// NARFLEX: David had set this at 1MB; but we had MPEG2PS recordings that failed unless it was 2MB
+					if(packetbufsize > (3*1024*1024)) 
+					{
+						// set the codec type to data so it doesn't show up as some other random type
+						st->codec->codec_type = CODEC_TYPE_DATA;
+						st->codec->codec_id = CODEC_ID_NONE;
+						pd->buf_size=0;
+						av_freep(&pd->buf);
+					}
                 }
             }
         }
@@ -1027,8 +1080,11 @@ static void compute_pkt_fields(AVFormatContext *s, AVStream *st,
         else if (pc->key_frame == -1 && pc->pict_type == FF_I_TYPE)
             pkt->flags |= AV_PKT_FLAG_KEY;
     }
-    if (pc)
+    if (pc) {
         pkt->convergence_duration = pc->convergence_duration;
+		if (pc->field_frame_flag)
+			pkt->flags |= PKT_FLAG_FIELD;
+	}
 }
 
 
@@ -1417,7 +1473,7 @@ int av_index_search_timestamp(AVStream *st, int64_t wanted_timestamp,
     return  m;
 }
 
-#define DEBUG_SEEK
+//#define DEBUG_SEEK
 
 int av_seek_frame_binary(AVFormatContext *s, int stream_index, int64_t target_ts, int flags){
     AVInputFormat *avif= s->iformat;
@@ -1495,11 +1551,12 @@ int64_t av_gen_search(AVFormatContext *s, int stream_index, int64_t target_ts, i
 #endif
 
     if(ts_min == AV_NOPTS_VALUE){
+
         pos_min = s->data_offset;
         ts_min = read_timestamp(s, stream_index, &pos_min, INT64_MAX);
         if (ts_min == AV_NOPTS_VALUE)
             return -1;
-    }
+	}
 
     if(ts_max == AV_NOPTS_VALUE){
         int step= 1024;
@@ -1950,8 +2007,12 @@ static void av_estimate_timings(AVFormatContext *ic, int64_t old_offset)
 {
     int64_t file_size;
 
+	/* If we're in active file mode, then this loop will go on forever so realize that
+	   and stop us if we've found 2 streams*/
+	int activeFile = ((((URLContext *) ic->pb->opaque)->flags & URL_ACTIVEFILE) == URL_ACTIVEFILE);
+	
     /* get the file size, if possible */
-    if (ic->iformat->flags & AVFMT_NOFILE) {
+    if (ic->iformat->flags & AVFMT_NOFILE || activeFile) {
         file_size = 0;
     } else {
         file_size = url_fsize(ic->pb);
@@ -2006,7 +2067,8 @@ static int has_codec_parameters(AVCodecContext *enc)
             enc->codec_id == CODEC_ID_MP1 ||
             enc->codec_id == CODEC_ID_MP2 ||
             enc->codec_id == CODEC_ID_MP3 ||
-            enc->codec_id == CODEC_ID_SPEEX))
+            enc->codec_id == CODEC_ID_SPEEX ||
+			enc->codec_id == CODEC_ID_DTS))
             return 0;
         break;
     case AVMEDIA_TYPE_VIDEO:
@@ -2157,7 +2219,7 @@ static int tb_unreliable(AVCodecContext *c){
 
 int av_find_stream_info(AVFormatContext *ic)
 {
-    int i, count, ret, read_size, j;
+    int i, count, ret, read_size, j, has_video;
     AVStream *st;
     AVPacket pkt1, *pkt;
     int64_t last_dts[MAX_STREAMS];
@@ -2205,6 +2267,7 @@ int av_find_stream_info(AVFormatContext *ic)
 
     count = 0;
     read_size = 0;
+	has_video = 0;
     for(;;) {
         if(url_interrupt_cb()){
             ret= AVERROR(EINTR);
@@ -2217,6 +2280,8 @@ int av_find_stream_info(AVFormatContext *ic)
             st = ic->streams[i];
             if (!has_codec_parameters(st->codec))
                 break;
+			if (st->codec->codec_type == CODEC_TYPE_VIDEO)
+				has_video = 1;
             /* variable fps and no guess at the real fps */
             if(   tb_unreliable(st->codec) && !(st->r_frame_rate.num && st->avg_frame_rate.num)
                && duration_count[i]<20 && st->codec->codec_type == AVMEDIA_TYPE_VIDEO)
@@ -2236,6 +2301,13 @@ int av_find_stream_info(AVFormatContext *ic)
                 av_log(ic, AV_LOG_DEBUG, "All info found\n");
                 break;
             }
+			/* If we're in active file mode, then this loop will go on forever so realize that
+			   and stop us if we've found 2 streams (w/ at least one video) */
+			if ((((URLContext *) ic->pb->opaque)->flags & URL_ACTIVEFILE) == URL_ACTIVEFILE && ic->nb_streams >= 2 && has_video)
+			{
+				ret = count;
+				break;
+	        }
         }
         /* we did not get all the codec info, but we read too much data */
         if (read_size >= ic->probesize) {
@@ -2285,6 +2357,9 @@ int av_find_stream_info(AVFormatContext *ic)
             int index= pkt->stream_index;
             int64_t last= last_dts[index];
             int64_t duration= pkt->dts - last;
+
+			if (pkt->flags & PKT_FLAG_FIELD)
+				duration *= 2; // two fields are needed per frame
 
             if(pkt->dts != AV_NOPTS_VALUE && last != AV_NOPTS_VALUE && duration>0){
                 double dur= duration * av_q2d(st->time_base);
@@ -3199,9 +3274,17 @@ int parse_frame_rate(int *frame_rate_num, int *frame_rate_den, const char *arg)
 
 int64_t av_gettime(void)
 {
+#if defined(CONFIG_WINCE)
+    return timeGetTime() * INT64_C(1000);
+#elif defined(__MINGW32__)
+    struct timeb tb;
+    _ftime(&tb);
+    return ((int64_t)tb.time * INT64_C(1000) + (int64_t)tb.millitm) * INT64_C(1000);
+#else
     struct timeval tv;
     gettimeofday(&tv,NULL);
     return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+#endif
 }
 
 uint64_t ff_ntp_time(void)

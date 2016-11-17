@@ -120,6 +120,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
     /* set some sane default values */
     s->pict_type = FF_I_TYPE;
     s->key_frame = 0;
+	s->field_frame_flag = 0;
 
     h->s.avctx= avctx;
     h->sei_recovery_frame_cnt = -1;
@@ -193,6 +194,11 @@ static inline int parse_nal_units(AVCodecParserContext *s,
             }else{
                 if(get_bits1(&h->s.gb)) { //field_pic_flag
                     h->s.picture_structure= PICT_TOP_FIELD + get_bits1(&h->s.gb); //bottom_field_flag
+					// STV: at least one interlaced frame will mark the stream as interlaced
+					if (!avctx->interlaced) {
+//						av_log(NULL, AV_LOG_INFO, "setting codec interlaced flag!!!\n");
+						avctx->interlaced = 1;
+					}
                 } else {
                     h->s.picture_structure= PICT_FRAME;
                 }
@@ -203,6 +209,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
                     case SEI_PIC_STRUCT_TOP_FIELD:
                     case SEI_PIC_STRUCT_BOTTOM_FIELD:
                         s->repeat_pict = 0;
+						s->field_frame_flag = 1;
                         break;
                     case SEI_PIC_STRUCT_FRAME:
                     case SEI_PIC_STRUCT_TOP_BOTTOM:
@@ -225,6 +232,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
                 }
             } else {
                 s->repeat_pict = h->s.picture_structure == PICT_FRAME ? 1 : 0;
+				s->field_frame_flag = !s->repeat_pict;
             }
 
             return 0; /* no need to evaluate the rest */

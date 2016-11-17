@@ -167,6 +167,8 @@ External library support:
                            and libraw1394 [no]
   --enable-libdirac        enable Dirac support via libdirac [no]
   --enable-libfaac         enable FAAC support via libfaac [no]
+  --enable-libfaad         enable FAAD support via libfaad [no]
+  --enable-libfaadbin      open libfaad.so.0 at runtime [no]
   --enable-libgsm          enable GSM support via libgsm [no]
   --enable-libmp3lame      enable MP3 encoding via libmp3lame [no]
   --enable-libnut          enable NUT (de)muxing via libnut,
@@ -869,6 +871,8 @@ CONFIG_LIST="
     libdc1394
     libdirac
     libfaac
+    libfaad
+    libfaadbin
     libgsm
     libmp3lame
     libnut
@@ -1299,6 +1303,8 @@ h264_parser_select="golomb h264dsp"
 libdirac_decoder_deps="libdirac !libschroedinger"
 libdirac_encoder_deps="libdirac"
 libfaac_encoder_deps="libfaac"
+libfaad_decoder_deps="libfaad"
+libfaadbin_decoder_extralibs='$ldl'
 libgsm_decoder_deps="libgsm"
 libgsm_encoder_deps="libgsm"
 libgsm_ms_decoder_deps="libgsm"
@@ -2640,7 +2646,8 @@ enabled avisynth   && require2 vfw32 "windows.h vfw.h" AVIFileInit -lavifil32
 enabled libdirac   && add_cflags $(pkg-config --cflags dirac) &&
                       require  libdirac libdirac_decoder/dirac_parser.h dirac_decoder_init $(pkg-config --libs dirac) &&
                       require  libdirac libdirac_encoder/dirac_encoder.h dirac_encoder_init $(pkg-config --libs dirac)
-enabled libfaac    && require2 libfaac "stdint.h faac.h" faacEncGetVersion -lfaac
+enabled libfaac    && require2 libfaac "stdint.h faac.h" faacEncGetVersion -lfaac -lm
+enabled libfaad    && require2 libfaad faad.h faacDecOpen -lfaad
 enabled libgsm     && require  libgsm gsm/gsm.h gsm_create -lgsm
 enabled libmp3lame && require  libmp3lame lame/lame.h lame_init -lmp3lame
 enabled libnut     && require  libnut libnut.h nut_demuxer_init -lnut
@@ -2657,11 +2664,12 @@ enabled libvorbis  && require  libvorbis vorbis/vorbisenc.h vorbis_info_init -lv
 enabled libvpx     && { check_lib2 "vpx/vpx_decoder.h vpx/vp8dx.h" vpx_codec_dec_init_ver -lvpx &&
                         check_lib2 "vpx/vpx_encoder.h vpx/vp8cx.h" vpx_codec_enc_init_ver -lvpx ||
                       die "ERROR: libvpx version must be >=0.9.1"; }
-enabled libx264    && require  libx264 x264.h x264_encoder_encode -lx264 &&
+enabled libx264    && require  libx264 x264.h x264_encoder_encode -lx264 -lm &&
                       { check_cpp_condition x264.h "X264_BUILD >= 98" ||
                         die "ERROR: libx264 version must be >= 0.98."; }
-enabled libxvid    && require  libxvid xvid.h xvid_global -lxvidcore
+enabled libxvid    && require  libxvid xvid.h xvid_global -lxvidcore -lm
 enabled mlib       && require  mediaLib mlib_types.h mlib_VectorSub_S16_U8_Mod -lmlib
+
 
 # libdc1394 check
 if enabled libdc1394; then
@@ -2764,7 +2772,7 @@ check_cflags -Wcast-qual
 check_cflags -Wwrite-strings
 check_cflags -Wtype-limits
 check_cflags -Wundef
-check_cflags -Wmissing-prototypes
+#check_cflags -Wmissing-prototypes
 enabled extra_warnings && check_cflags -Winline
 
 # add some linker flags
@@ -2823,7 +2831,7 @@ elif enabled ccc; then
 elif enabled gcc; then
     check_cflags -fno-tree-vectorize
     check_cflags -Werror=implicit-function-declaration
-    check_cflags -Werror=missing-prototypes
+#    check_cflags -Werror=missing-prototypes
 elif enabled clang; then
     check_cflags -Qunused-arguments
 elif enabled armcc; then
@@ -2917,6 +2925,8 @@ echo "AVISynth enabled          ${avisynth-no}"
 echo "libdc1394 support         ${libdc1394-no}"
 echo "libdirac enabled          ${libdirac-no}"
 echo "libfaac enabled           ${libfaac-no}"
+echo "libfaad enabled           ${libfaad-no}"
+echo "libfaad dlopened          ${libfaadbin-no}"
 echo "libgsm enabled            ${libgsm-no}"
 echo "libmp3lame enabled        ${libmp3lame-no}"
 echo "libnut enabled            ${libnut-no}"

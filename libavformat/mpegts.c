@@ -40,6 +40,8 @@
 
 #define MAX_PES_PAYLOAD 200*1024
 
+int bug_broken_dts = 0;
+
 enum MpegTSFilterType {
     MPEGTS_PES,
     MPEGTS_SECTION,
@@ -497,7 +499,7 @@ static const StreamType ISO_types[] = {
     { 0x04, AVMEDIA_TYPE_AUDIO,        CODEC_ID_MP3 },
     { 0x0f, AVMEDIA_TYPE_AUDIO,        CODEC_ID_AAC },
     { 0x10, AVMEDIA_TYPE_VIDEO,      CODEC_ID_MPEG4 },
-  //{ 0x11, AVMEDIA_TYPE_AUDIO,        CODEC_ID_AAC }, /* LATM syntax */
+    { 0x11, AVMEDIA_TYPE_AUDIO,   CODEC_ID_AAC_LATM }, /* LATM syntax */
     { 0x1b, AVMEDIA_TYPE_VIDEO,       CODEC_ID_H264 },
     { 0xd1, AVMEDIA_TYPE_VIDEO,      CODEC_ID_DIRAC },
     { 0xea, AVMEDIA_TYPE_VIDEO,        CODEC_ID_VC1 },
@@ -570,6 +572,8 @@ static int mpegts_set_stream_info(AVStream *st, PESContext *pes,
     if (prog_reg_desc == AV_RL32("HDMV") &&
         st->codec->codec_id == CODEC_ID_NONE) {
         mpegts_find_stream_type(st, pes->stream_type, HDMV_types);
+// NARFLEX - we don't want another stream for AC3 inside of TrueHD; that just messes things up
+		/*
         if (pes->stream_type == 0x83) {
             // HDMV TrueHD streams also contain an AC3 coded version of the
             // audio track - add a second stream for this
@@ -592,11 +596,11 @@ static int mpegts_set_stream_info(AVStream *st, PESContext *pes,
             sub_st->codec->codec_id   = CODEC_ID_AC3;
             sub_st->need_parsing = AVSTREAM_PARSE_FULL;
             sub_pes->sub_st = pes->sub_st = sub_st;
-        }
+        }*/
     }
-    if (pes->stream_type == 0x11)
+    /*if (pes->stream_type == 0x11)
         av_log(pes->stream, AV_LOG_WARNING,
-               "AAC LATM not currently supported, patch welcome\n");
+               "AAC LATM not currently supported, patch welcome\n");*/
     if (st->codec->codec_id == CODEC_ID_NONE)
         mpegts_find_stream_type(st, pes->stream_type, MISC_types);
 
@@ -788,6 +792,13 @@ static int mpegts_push_data(MpegTSFilter *filter,
                     }
                 }
 
+				// TODO: Finish this up
+                if (bug_broken_dts && (pes->dts != AV_NOPTS_VALUE)) {
+					// check against last DTS for this stream
+					// if it's lower than the last, then we're bugged and need to modify PTS values
+					
+					pes->dts = AV_NOPTS_VALUE;
+				}
                 /* we got the full header. We parse it and get the payload */
                 pes->state = MPEGTS_PAYLOAD;
                 pes->data_index = 0;
@@ -1307,6 +1318,9 @@ static int mpegts_probe(AVProbeData *p)
     if (check_count < CHECK_COUNT)
         return -1;
 
+	// sanity check the probe size, we don't need much data to determine if it's a valid TS
+	if((size < 0) ? (p->buf_size > (MAX_SCAN_PACKETS*TS_FEC_PACKET_SIZE)) : 0) return 0;
+	
     score     = analyze(p->buf, TS_PACKET_SIZE     *check_count, TS_PACKET_SIZE     , NULL)*CHECK_COUNT/check_count;
     dvhs_score= analyze(p->buf, TS_DVHS_PACKET_SIZE*check_count, TS_DVHS_PACKET_SIZE, NULL)*CHECK_COUNT/check_count;
     fec_score = analyze(p->buf, TS_FEC_PACKET_SIZE *check_count, TS_FEC_PACKET_SIZE , NULL)*CHECK_COUNT/check_count;
@@ -1316,7 +1330,7 @@ static int mpegts_probe(AVProbeData *p)
     if     (score > fec_score && score > dvhs_score && score > 6) return AVPROBE_SCORE_MAX + score     - CHECK_COUNT;
     else if(dvhs_score > score && dvhs_score > fec_score && dvhs_score > 6) return AVPROBE_SCORE_MAX + dvhs_score  - CHECK_COUNT;
     else if(                 fec_score > 6) return AVPROBE_SCORE_MAX + fec_score - CHECK_COUNT;
-    else                                    return -1;
+    else                                    return 0;
 #else
     /* only use the extension for safer guess */
     if (av_match_ext(p->filename, "ts"))
@@ -1575,6 +1589,19 @@ static int64_t mpegts_get_pcr(AVFormatContext *s, int stream_index,
                 break;
             }
             pos += ts->raw_packet_size;
+			if (buf[0] != 0x47)
+			{
+				// We don't have sync...adjust our position until we do
+				for (int i = 1; i < TS_PACKET_SIZE; i++)
+				{
+					if (buf[i] == 0x47)
+					{
+						pos += i;
+						ts->pos47 = (ts->pos47 + i) % ts->raw_packet_size;
+						break;
+					}
+				}
+			}
         }
     } else {
         for(;;) {

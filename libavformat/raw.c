@@ -538,6 +538,7 @@ static int h261_probe(AVProbeData *p)
 #define DCA_MARKER_14B_LE 0xFF1F00E8
 #define DCA_MARKER_RAW_BE 0x7FFE8001
 #define DCA_MARKER_RAW_LE 0xFE7F0180
+#define DCA_HD_MARKER     0x64582025
 static int dts_probe(AVProbeData *p)
 {
     const uint8_t *buf, *bufp;
@@ -564,6 +565,10 @@ static int dts_probe(AVProbeData *p)
         if (state == DCA_MARKER_14B_LE)
             if ((bytestream_get_be16(&bufp) & 0xF0FF) == 0xF007)
                 markers[2]++;
+		
+		/* DTS Express streams only use the DCA HD marker... */
+		if (state == DCA_HD_MARKER)
+            return AVPROBE_SCORE_MAX/2+1;
     }
     sum = markers[0] + markers[1] + markers[2];
     max = markers[1] > markers[0];

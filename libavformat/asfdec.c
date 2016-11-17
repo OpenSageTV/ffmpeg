@@ -145,40 +145,80 @@ static int asf_probe(AVProbeData *pd)
         return 0;
 }
 
-static int get_value(ByteIOContext *pb, int type){
+static uint64_t get_value(ByteIOContext *pb, int type){
     switch(type){
-        case 2: return get_le32(pb);
-        case 3: return get_le32(pb);
+        case 2: return (uint64_t)get_le32(pb);
+        case 3: return (uint64_t)get_le32(pb);
         case 4: return get_le64(pb);
-        case 5: return get_le16(pb);
-        default:return INT_MIN;
+        case 5: return (uint64_t)get_le16(pb);
+        default:return INT64_MIN;
     }
 }
 
 static void get_tag(AVFormatContext *s, const char *key, int type, int len)
 {
-    char *value;
+     char* value = NULL;
 
-    if ((unsigned)len >= (UINT_MAX - 1)/2)
-        return;
-
-    value = av_malloc(2*len+1);
-    if (!value)
-        return;
-
-    if (type == 0) {         // UTF16-LE
-        get_str16_nolen(s->pb, len, value, 2*len + 1);
-    } else if (type > 1 && type <= 5) {  // boolean or DWORD or QWORD or WORD
+	if ((type == 0) || (type == 1)) // unicode or byte
+	{
+		if (!strcmp(key, "WM/Picture")) 
+		{
+			// report picture offset/size so we can load it externally
+			uint64_t picPos;
+			
+			// skip the first four bytes (not sure what it is)
+			len -= 4;
+			get_le32(s->pb);
+			// Skip the null terminated wide string for mime type
+			while (len > 0)
+			{
+				len -= 2;
+				if (get_le16(s->pb) == 0)
+					break;
+			}
+			// Skip the next byte for pic type (this might be swapped with the next string
+			// so switch these two if this is wrong)
+			get_byte(s->pb);
+			len--;
+			// Skip null terminated wide string for description
+			while (len > 0)
+			{
+				len -= 2;
+				if (get_le16(s->pb) == 0)
+					break;
+			}
+			picPos = url_ftell(s->pb);
+			value = (char*) av_mallocz(1024);
+			if (!value) return;
+			snprintf(value, 1024, "%"PRIi64",%d", picPos, len);
+			url_fskip(s->pb, len);
+		}
+		else if (type == 0)
+		{
+			value = (char*) av_mallocz(2*len + 1);
+			if (!value) return;
+			get_str16_nolen(s->pb, len, value, 2*len + 1);
+		}
+		else
+		{
+			url_fskip(s->pb, len);
+			return;
+		}
+	}
+	else if (type >= 2 && type <= 5)   // boolean or DWORD or QWORD or WORD
+	{
         uint64_t num = get_value(s->pb, type);
-        snprintf(value, len, "%"PRIu64, num);
+        if (!strcmp(key, "WM/Track"))
+	        num++; // add 1 to WM/Track value so it's one based
+		value = (char*) av_mallocz(256);
+		if (!value) return;
+        snprintf(value, 256, "%"PRIu64, num);
     } else {
         url_fskip(s->pb, len);
-        av_freep(&value);
-        av_log(s, AV_LOG_DEBUG, "Unsupported value type %d in tag %s.\n", type, key);
         return;
     }
     av_metadata_set2(&s->metadata, key, value, 0);
-    av_freep(&value);
+	av_free(value);
 }
 
 static int asf_read_header(AVFormatContext *s, AVFormatParameters *ap)
@@ -192,6 +232,7 @@ static int asf_read_header(AVFormatContext *s, AVFormatParameters *ap)
     int64_t gsize;
     AVRational dar[128];
     uint32_t bitrate[128];
+	int theFlags;
 
     memset(dar, 0, sizeof(dar));
     memset(bitrate, 0, sizeof(bitrate));
@@ -287,7 +328,10 @@ static int asf_read_header(AVFormatContext *s, AVFormatParameters *ap)
             total_size = get_le64(pb);
             type_specific_size = get_le32(pb);
             get_le32(pb);
-            st->id = get_le16(pb) & 0x7f; /* stream id */
+			theFlags = get_le16(pb);
+            st->id = theFlags & 0x7f; /* stream id */
+            if (theFlags & 0x80)
+                av_metadata_set(&s->metadata, "ENCRYPTION", "MS-DRM");
             // mapping of asf ID to AV stream ID;
             asf->asfid2avid[st->id] = s->nb_streams - 1;
 
@@ -417,10 +461,14 @@ static int asf_read_header(AVFormatContext *s, AVFormatParameters *ap)
             len3 = get_le16(pb);
             len4 = get_le16(pb);
             len5 = get_le16(pb);
-            get_tag(s, "title"    , 0, len1);
-            get_tag(s, "author"   , 0, len2);
-            get_tag(s, "copyright", 0, len3);
-            get_tag(s, "comment"  , 0, len4);
+			if (len1 > 0)
+				get_tag(s, "Title"    , 0, len1);
+            if (len2 > 0)
+				get_tag(s, "Artist"   , 0, len2);
+			if (len3 > 0)
+				get_tag(s, "Copyright", 0, len3);
+			if (len4 > 0)
+				get_tag(s, "Comment"  , 0, len4);
             url_fskip(pb, len5);
         } else if (!guidcmp(&g, &stream_bitrate_guid)) {
             int stream_count = get_le16(pb);
@@ -595,8 +643,10 @@ static int asf_read_header(AVFormatContext *s, AVFormatParameters *ap)
             if (!s->keylen) {
                 if (!guidcmp(&g, &ff_asf_content_encryption)) {
                     av_log(s, AV_LOG_WARNING, "DRM protected stream detected, decoding will likely fail!\n");
+					av_metadata_set(&s->metadata, "ENCRYPTION", "MS-DRM");
                 } else if (!guidcmp(&g, &ff_asf_ext_content_encryption)) {
                     av_log(s, AV_LOG_WARNING, "Ext DRM protected stream detected, decoding will likely fail!\n");
+					av_metadata_set(&s->metadata, "ENCRYPTION", "MS-DRM");
                 } else if (!guidcmp(&g, &ff_asf_digital_signature)) {
                     av_log(s, AV_LOG_WARNING, "Digital signature detected, decoding will likely fail!\n");
                 }
@@ -825,6 +875,7 @@ static int asf_read_frame_header(AVFormatContext *s, ByteIOContext *pb){
  */
 static int ff_asf_parse_packet(AVFormatContext *s, ByteIOContext *pb, AVPacket *pkt)
 {
+    int ret;
     ASFContext *asf = s->priv_data;
     ASFStream *asf_st = 0;
     for (;;) {
@@ -900,7 +951,9 @@ static int ff_asf_parse_packet(AVFormatContext *s, ByteIOContext *pb, AVPacket *
                 av_free_packet(&asf_st->pkt);
             }
             /* new packet */
-            av_new_packet(&asf_st->pkt, asf->packet_obj_size);
+            ret = av_new_packet(&asf_st->pkt, asf->packet_obj_size);
+            if(ret<0)
+                return ret;
             asf_st->seq = asf->packet_seq;
             asf_st->pkt.dts = asf->packet_frag_timestamp;
             asf_st->pkt.stream_index = asf->stream_index;

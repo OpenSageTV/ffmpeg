@@ -176,6 +176,68 @@ static int wav_probe(AVProbeData *p)
     return 0;
 }
 
+/* Most WAV files with DTS audio are broken and use 0x01 (PCM) as format
+   ID instead of 0x2001 (DTS). If the format found is 0x01, check the first
+   bytes after 'data' for a valid DTS header. */
+static void find_dts_header (ByteIOContext *pb, AVCodecContext *codec)
+{
+	int sizeLeft = (int)(pb->buf_end - pb->buf_ptr);
+	// Make sure there's 2 matches
+	int matchesLeft = 2;
+	int matchNow = 0;
+	int dtsBitSize = 0;
+	for (int i = 0; i < sizeLeft; i++)
+	{
+
+	  /* 14 bits and little endian bitstream */
+	  if (pb->buf_ptr[i] == 0xff && pb->buf_ptr[i+1] == 0x1f &&
+		  pb->buf_ptr[i+2] == 0x00 && pb->buf_ptr[i+3] == 0xe8 &&
+		  (pb->buf_ptr[i+4] & 0xf0) == 0xf0 && pb->buf_ptr[i+5] == 0x07)
+	  {
+		  matchNow = 1;
+		  dtsBitSize = 14;
+	  }
+
+	  /* 14 bits and big endian bitstream */
+	  if (pb->buf_ptr[i] == 0x1f && pb->buf_ptr[i+1] == 0xff &&
+		  pb->buf_ptr[i+2] == 0xe8 && pb->buf_ptr[i+3] == 0x00 &&
+		  pb->buf_ptr[i+4] == 0x07 && (pb->buf_ptr[i+5] & 0xf0) == 0xf0)
+	  {
+		  matchNow = 1;
+		  dtsBitSize = 14;
+	  }
+    
+	  /* 16 bits and little endian bitstream */
+	  if (pb->buf_ptr[i] == 0xfe && pb->buf_ptr[i+1] == 0x7f &&
+		  pb->buf_ptr[i+2] == 0x01 && pb->buf_ptr[i+3] == 0x80)
+	  {
+		  matchNow = 1;
+		  dtsBitSize = 16;
+	  }
+    
+	  /* 16 bits and big endian bitstream */
+	  if (pb->buf_ptr[i] == 0x7f && pb->buf_ptr[i+1] == 0xfe &&
+		  pb->buf_ptr[i+2] == 0x80 && pb->buf_ptr[i+3] == 0x01)
+	  {
+		  matchNow = 1;
+		  dtsBitSize = 16;
+	  }
+
+	  if (matchNow)
+	  {
+		matchNow = 0;
+		matchesLeft--;
+		if (matchesLeft == 0)
+		{
+			codec->codec_id = CODEC_ID_DTS;
+			codec->sub_id = (dtsBitSize == 14) ? 1 : 2;
+			break;
+		}
+	  }
+	}
+}
+
+
 /* wav input */
 static int wav_read_header(AVFormatContext *s,
                            AVFormatParameters *ap)
@@ -231,6 +293,12 @@ static int wav_read_header(AVFormatContext *s,
         wav->data_end = INT64_MAX;
     } else
         wav->data_end= url_ftell(pb) + size;
+
+    /* check if it's really PCM or hidden DTS */
+    if (ff_codec_get_id (ff_codec_wav_tags,
+                      st->codec->codec_tag) == CODEC_ID_PCM_S16LE)
+      find_dts_header (pb, st->codec);
+      
     return 0;
 }
 
